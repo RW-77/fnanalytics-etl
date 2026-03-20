@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from etl.db.models import get_session, Event, EventWindow, Match, MatchPlayer, DamageDealtEvent, EliminationEvent, init_db
-from etl.parsing.match_parser import parse_damage_dealt, parse_elims
+from etl.parsing.match_parsing import parse_damage_dealt, parse_elims
 
 
 def load_event_window_metadata(event_window_metadata: dict, session: Session) -> EventWindow: 

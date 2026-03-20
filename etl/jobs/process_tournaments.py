@@ -23,8 +23,8 @@ from etl.db.loader import (
     load_damage_dealt_events,
     load_elimination_events
 )
-from etl.parsing.event_parser import parse_event_window_metadata, parse_event_matches
-from etl.parsing.match_parser import (
+from etl.parsing.event_parsing import parse_event_window_metadata, parse_event_matches
+from etl.parsing.match_parsing import (
     parse_match_metadata, 
     parse_match_players,
     parse_elims, 
