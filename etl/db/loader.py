@@ -5,11 +5,41 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from etl.db.models import get_session, Match, MatchPlayer, DamageDealtEvent, EliminationEvent, init_db
+from etl.db.models import get_session, Event, EventWindow, Match, MatchPlayer, DamageDealtEvent, EliminationEvent, init_db
 from etl.parsing.match_parser import parse_damage_dealt, parse_elims
 
 
+def load_event_window_metadata(event_window_metadata: dict, session: Session) -> EventWindow: 
+    event_window_id = event_window_metadata["event_window_id"]
+    existing_event_window = session.query(EventWindow).filter_by(event_window_id=event_window_id).first()
+    if existing_event_window:
+        print(f"Event window {event_window_id} already exists in database")
+        return existing_event_window
+
+    event_info_path = f"data/raw/event_window_{match_id}/match_info.json"
+    try:
+        with open(event_info_path, "r") as f:
+            event_info = json.load(f)
+    except FileNotFoundError:
+        raise ValueError(f"Match info not found at {event_info_path}")
+    
+    event_window = EventWindow(
+        event_window_id=event_window_metadata["event_window_id"],
+        start_time=event_window_metadata["start_time"],
+        end_time=event_window_metadata["end_time"],
+        total_matches=event_window_metadata["total_matches"]
+    )
+
+    session.add(event_window)
+    session.commit()
+
+    print(f"✅ Created event window record: {event_window_id}")
+
+    return event_window
+
+
 def load_match_metadata(match_metadata: dict, session: Session) -> Match:
+    match_id = match_metadata["match_id"]
     existing_match = session.query(Match).filter_by(match_id=match_id).first()
     if existing_match:
         print(f"Match {match_id} already exists in database")
