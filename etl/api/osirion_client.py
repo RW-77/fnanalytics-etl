@@ -3,6 +3,7 @@ import json
 import time
 import requests
 from pathlib import Path
+from typing import Any
 from dotenv import load_dotenv
 
 
@@ -114,6 +115,49 @@ def session_to_match_id(session_id: str) -> str | None:
         print("No match ID found in response.")
         print(json.dumps(data, indent=2))
         return None
+
+
+def fetch_tournaments(
+    interval_seconds: int,
+    include_progress: bool = True,
+    season: int | None = None,
+    limit: int = 100,
+    from_index: int = 0,
+) -> list[dict[str, Any]]:
+    """
+    Fetch tournament/event-window metadata from Osirion with pagination.
+
+    The API returns tournament metadata in pages, so this helper keeps fetching
+    until it receives a short page.
+    """
+    url = f"{BASE_URL}/tournaments"
+    tournaments: list[dict[str, Any]] = []
+    current_from_index = from_index
+
+    while True:
+        params: dict[str, Any] = {
+            "intervalS": interval_seconds,
+            "includeProgress": include_progress,
+            "fromIndex": current_from_index,
+            "limit": limit,
+        }
+        if season is not None:
+            params["season"] = season
+
+        data = _make_request(url, params)
+        batch = data.get("tournaments", [])
+
+        if not isinstance(batch, list):
+            raise ValueError("Unexpected API response: `tournaments` was not a list.")
+
+        tournaments.extend(batch)
+
+        if not batch or len(batch) < limit:
+            break
+
+        current_from_index += len(batch)
+
+    return tournaments
 
 
 def get_team_players(epic_id: str, match_id: str):
@@ -256,4 +300,7 @@ if __name__ == "__main__":
     # match_id = "832ceecc424df110d58e3e96d3dff834"
     # fetch_match_info(match_id)
     event_window = "S29_FNCS_Major2_GrandFinalDay2_EU"
-    ew_data_path = fetch_event_window_data(event_window)
+    # ew_data_path = fetch_event_window_data(event_window)
+
+    interval_seconds = 604800
+    print(json.dumps(fetch_tournaments(interval_seconds=interval_seconds), indent=2))
