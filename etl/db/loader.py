@@ -1,12 +1,15 @@
-import json
 from datetime import datetime
 
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from etl.db.models import get_session, Event, EventWindow, Match, MatchPlayer, DamageDealtEvent, EliminationEvent, init_db
-from etl.parsing.match_parsing import parse_damage_dealt, parse_elims
+from etl.db.models import (
+    EventWindow, 
+    Match, 
+    MatchPlayer, 
+    DamageDealtEvent, 
+    EliminationEvent, 
+)
+from etl.types import ParsedMatchData
 
 
 def load_event_window_metadata(event_window_metadata: dict, session: Session) -> EventWindow: 
@@ -15,13 +18,6 @@ def load_event_window_metadata(event_window_metadata: dict, session: Session) ->
     if existing_event_window:
         print(f"Event window {event_window_id} already exists in database")
         return existing_event_window
-
-    event_info_path = f"data/raw/event_window_{match_id}/match_info.json"
-    try:
-        with open(event_info_path, "r") as f:
-            event_info = json.load(f)
-    except FileNotFoundError:
-        raise ValueError(f"Match info not found at {event_info_path}")
     
     event_window = EventWindow(
         event_window_id=event_window_metadata["event_window_id"],
@@ -31,7 +27,7 @@ def load_event_window_metadata(event_window_metadata: dict, session: Session) ->
     )
 
     session.add(event_window)
-    session.commit()
+    session.flush()
 
     print(f"✅ Created event window record: {event_window_id}")
 
@@ -44,13 +40,6 @@ def load_match_metadata(match_metadata: dict, session: Session) -> Match:
     if existing_match:
         print(f"Match {match_id} already exists in database")
         return existing_match
-
-    match_info_path = f"data/raw/match_{match_id}/match_info.json"
-    try:
-        with open(match_info_path, "r") as f:
-            match_info = json.load(f)
-    except FileNotFoundError:
-        raise ValueError(f"Match info not found at {match_info_path}")
     
     match = Match(
         match_id=match_metadata["match_id"],
@@ -64,7 +53,7 @@ def load_match_metadata(match_metadata: dict, session: Session) -> Match:
     )
 
     session.add(match)
-    session.commit()
+    session.flush()
 
     print(f"✅ Created match record: {match_id}")
     return match
@@ -74,7 +63,7 @@ def load_match_players(
     players_data: list[dict], 
     match_id: str, 
     session: Session
-) -> int:
+) -> dict[str, int]:
     """
     Create MatchPlayer records for all players in a match.
     
@@ -86,17 +75,18 @@ def load_match_players(
         session: SQLAlchemy session
         
     Returns:
-        int: Number of new player records created
+        dict[str, int]: Mapping of Epic ID to MatchPlayer primary key
     """
     if not players_data:
         print("⚠️  No players to load")
-        return 0
+        return {}
     
     print(f"Loading {len(players_data)} players for match {match_id}...")
     
+    existing_players = session.query(MatchPlayer).filter_by(match_id=match_id).all()
     existing_player_ids = {
-        p.epic_id 
-        for p in session.query(MatchPlayer.epic_id).filter_by(match_id=match_id).all()
+        player.epic_id
+        for player in existing_players
     }
     
     players_created = 0
@@ -117,33 +107,42 @@ def load_match_players(
         session.add(new_player)
         players_created += 1
     
-    session.commit()
+    session.flush()
     
     if players_created > 0:
         print(f"✅ Created {players_created} new player records")
     else:
         print(f"ℹ️  All {len(players_data)} players already exist for this match")
-    
-    return players_created
+
+    player_rows = session.query(MatchPlayer).filter_by(match_id=match_id).all()
+    return {
+        player.epic_id: player.id
+        for player in player_rows
+    }
     
 
-def load_damage_events(damage_events: list[dict], match_id: str, session: Session) -> int:
+def load_damage_events(
+    damage_events: list[dict], 
+    match_id: str, 
+    player_id_map: dict[str, int], 
+    session: Session
+) -> int:
     """
     Bulk insert damage dealt events into the database.
     
     Args:
-        damage_events: List of damage event dictionaries from parse_damage_dealt() with keys:
-            - timestamp (int): Unix timestamp in milliseconds
-            - actor_id (str): Shooter's Epic ID
-            - recipient_id (str): Victim's Epic ID
-            - weapon_id (str): Weapon identifier
-            - damage (float): Damage amount dealt
-            - ax, ay, az (float): Actor's 3D coordinates
-            - rx, ry, rz (float): Recipient's 3D coordinates
-            - distance (float): Distance between actors
-            - zone (int): Storm zone number
-        match_id: The match these events belong to
-        session: SQLAlchemy session
+        `damage_events`: List of damage event dictionaries from parse_damage_dealt() with keys:
+            - `timestamp` (int): Unix timestamp in milliseconds
+            - `actor_id` (str): Shooter's Epic ID
+            - `recipient_id` (str): Victim's Epic ID
+            - `weapon_id` (str): Weapon identifier
+            - `damage` (float): Damage amount dealt
+            - `ax`, `ay`, `az` (float): Actor's 3D coordinates
+            - `rx`, `ry`, `rz` (float): Recipient's 3D coordinates
+            - `distance` (float): Distance between actors
+            - `zone` (int): Storm zone number
+        `match_id`: The match these events belong to
+        `session`: SQLAlchemy session
         
     Returns:
         int: Number of events loaded
@@ -160,12 +159,21 @@ def load_damage_events(damage_events: list[dict], match_id: str, session: Sessio
         # Convert timestamp from milliseconds to datetime
         timestamp_dt = datetime.fromtimestamp(event["timestamp"] / 1000)
         
+        actor_db_id = player_id_map.get(event["actor_id"])
+        recipient_db_id = player_id_map.get(event["recipient_id"])
+
+        if actor_db_id is None or recipient_db_id is None:
+            raise ValueError(
+                f"Missing MatchPlayer row for damage event in match {match_id}: "
+                f"actor={event['actor_id']}, recipient={event['recipient_id']}"
+            )
+
         damage_records.append({
             "match_id": match_id,
             "timestamp": timestamp_dt,
-            "game_time_seconds": None,  # Can be calculated if needed: (timestamp - match_start) / 1000
-            "actor_id": event["actor_id"],
-            "recipient_id": event["recipient_id"],
+            "game_time_seconds": event.get("game_time_seconds"),
+            "actor_id": actor_db_id,
+            "recipient_id": recipient_db_id,
             "weapon_id": event["weapon_id"],
             "weapon_type": None,  # TODO: Add weapon type mapping if available
             "damage_amount": event["damage"],  # Note: parse_damage_dealt returns "damage", not "damage_amount"
@@ -181,13 +189,17 @@ def load_damage_events(damage_events: list[dict], match_id: str, session: Sessio
     
     # Bulk insert using SQLAlchemy
     session.bulk_insert_mappings(DamageDealtEvent, damage_records) # type: ignore
-    session.commit()
     
     print(f"✅ Loaded {len(damage_records)} damage events")
     return len(damage_records)
 
 
-def load_elimination_events(elim_events: list[dict], match_id: str, session: Session) -> int:
+def load_elimination_events(
+    elim_events: list[dict], 
+    match_id: str,
+    player_id_map: dict[str, int],
+    session: Session
+) -> int:
     """
     Bulk insert elimination events into the database.
     
@@ -218,13 +230,22 @@ def load_elimination_events(elim_events: list[dict], match_id: str, session: Ses
     for event in elim_events:
         # Convert timestamp from milliseconds to datetime
         timestamp_dt = datetime.fromtimestamp(event["timestamp"] / 1000)
+
+        actor_db_id = player_id_map.get(event["actor_id"])
+        recipient_db_id = player_id_map.get(event["recipient_id"])
+
+        if actor_db_id is None or recipient_db_id is None:
+            raise ValueError(
+                f"Missing MatchPlayer row for elimination event in match {match_id}: "
+                f"actor={event['actor_id']}, recipient={event['recipient_id']}"
+            )
         
         elim_records.append({
             "match_id": match_id,
             "timestamp": timestamp_dt,
-            "game_time_seconds": None,  # Can be calculated if needed
-            "actor_id": event["actor_id"],
-            "recipient_id": event["recipient_id"],
+            "game_time_seconds": event.get("game_time_seconds"),
+            "actor_id": actor_db_id,
+            "recipient_id": recipient_db_id,
             "weapon_id": event["weapon_id"],
             "weapon_type": None,  # TODO: Add weapon type mapping if available
             "actor_x": event["ax"],
@@ -238,11 +259,22 @@ def load_elimination_events(elim_events: list[dict], match_id: str, session: Ses
         })
     
     # Bulk insert using SQLAlchemy
-    session.bulk_insert_mappings(inspect(EliminationEvent), elim_records) # type: ignore
-    session.commit()
+    session.bulk_insert_mappings(EliminationEvent, elim_records) # type: ignore
     
     print(f"✅ Loaded {len(elim_records)} elimination events")
     return len(elim_records)
+
+
+def load_match(parsed: ParsedMatchData, event_window_id: str, session: Session) -> None:
+
+    metadata = dict(parsed.metadata)
+    metadata["event_window_id"] = event_window_id
+
+    load_match_metadata(metadata, session)
+    player_id_map = load_match_players(parsed.players, parsed.match_id, session)
+    load_damage_events(parsed.damage, parsed.match_id, player_id_map, session)
+    load_elimination_events(parsed.elims, parsed.match_id, player_id_map, session)
+    session.commit()
 
 
 if __name__ == "__main__":
@@ -257,4 +289,3 @@ if __name__ == "__main__":
     with open(f"data/raw/match_{match_id}/match_info.json") as f:
         match_info = json.load(f)
         match_start = match_info["startTimestamp"]
-    
