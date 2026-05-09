@@ -1,26 +1,19 @@
 import json
 from datetime import datetime
 
-from etl.api.osirion_client import fetch_by_event_window
+from etl.api.osirion_client import fetch_event_window_matches
+from etl.types import RawEventWindowData
 
 
-def parse_event_window_metadata(event_window_id):
-    event_window_path = f"data/raw/event_window_{event_window_id}"
-    try:
-        with (
-            open(f"{event_window_path}/info.json", "r") as f1,
-            open(f"{event_window_path}/matches.json") as f2
-        ):
-            event_window_info = json.load(f1)
-            event_window_matches = json.load(f2)["matches"]
-    except FileNotFoundError:
-        raise ValueError(f"Event window files not found.")
+def parse_event_window_metadata(raw: RawEventWindowData):
+    event_window_info = raw.info
+    event_window_matches = raw.matches
 
     event_window_matches.sort(key=lambda e: e["info"]["startTimestamp"])
     total_matches = len(event_window_matches)
 
     if total_matches == 0:
-        raise ValueError(f"No matches found for event window {event_window_id}")
+        raise ValueError(f"No matches found for event window {raw.event_window_id}")
 
     first_match = event_window_matches[0]
     last_match = event_window_matches[-1]
@@ -33,28 +26,25 @@ def parse_event_window_metadata(event_window_id):
         end_time = datetime.fromtimestamp(end_time / 1e6)
 
     return {
-        "event_window_id": event_window_id,
+        "event_window_id": raw.event_window_id,
         "start_time": start_time,
         "end_time": end_time,
         "total_matches": total_matches
     }
 
 
-def parse_event_matches(event_window_id) -> list[dict]:
-    event_window_matches_path = f"data/raw/event_window_{event_window_id}/matches.json"
-    with open(event_window_matches_path, "r") as f:
-        matches = json.load(f)["matches"]
-
-        print(f"Found {len(matches)} matches to process\n")
+def parse_event_window_matches(raw: RawEventWindowData) -> list[dict]:
+    matches = raw.matches
+    print(f"Found {len(matches)} matches to process\n")
 
     return matches
 
 
-def parse_event_weapons(event_window_id) -> list[dict]:
-    matches = parse_event_matches(event_window_id)
+def parse_event_window_weapons(event_window_id) -> list[dict]:
+    matches = parse_event_window_matches(event_window_id)
 
     # Track unique weapons across all matches
-    seen_weapons = {}
+    seen_weapons = set()
     
     # Non-weapon types to filter out
     excluded_types = {
