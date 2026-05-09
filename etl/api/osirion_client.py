@@ -1,15 +1,22 @@
+"""
+Pure HTTP client for raw data from the Osirion API and 
+OsirionFNAPI
+"""
+
 import os
 import json
 import time
 import requests
-from pathlib import Path
 from typing import Any
 from dotenv import load_dotenv
+
+from etl.types import JsonDict, JsonList
 
 
 load_dotenv()
 
 BASE_URL = "https://api.osirion.gg/fortnite/v1"
+FNAPI_BASE_URL = "https://fnapi.osirion.gg/v1/maps"
 API_KEY = os.getenv("API_KEY") 
 
 if not API_KEY:
@@ -17,8 +24,25 @@ if not API_KEY:
 
 HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 
+REQUIRED_MATCH_EVENT_LOGS = [
+    "safeZoneUpdateEvents",
+    "reviveEvents",
+    "rebootEvents",
+    "knockedDownEvents",
+    "eliminationEvents",
+    "playerInventoryUpdateEvents",
+    "landingEvents",
+    "healthUpdateEvents",
+    "shieldUpdateEvents",
+]
 
-def _make_request(url: str, params: dict | None = None, max_retries: int = 3, retry_delay: float = 1.0) -> dict:
+
+def _make_request(
+    url: str,
+    params: dict[str, Any] | None = None,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
+) -> JsonDict:
     """
     Make a request to the Osirion API with retry logic for transient errors.
     
@@ -44,7 +68,13 @@ def _make_request(url: str, params: dict | None = None, max_retries: int = 3, re
             
             # Success
             if res.status_code == 200:
-                return res.json()
+                data = res.json()
+                if not isinstance(data, dict):
+                    raise ValueError(
+                        f"Unexpected API response from {url}: expected object, "
+                        f"got {type(data).__name__}"
+                    )
+                return data
             
             # Check if it's a retryable error
             if res.status_code in retryable_status_codes and attempt < max_retries - 1:
@@ -90,11 +120,16 @@ def _make_request(url: str, params: dict | None = None, max_retries: int = 3, re
     raise RuntimeError(f"Request failed after {max_retries} attempts")
 
 
-def _save_json(data: dict, path: str):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-    print(f"✅ Saved to {path}")
+def _extract_list(data: JsonDict, key: str) -> JsonList:
+    value = data.get(key, [])
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(
+            f"Unexpected API response: `{key}` was {type(value).__name__}, "
+            "expected list."
+        )
+    return value
 
 
 def session_to_match_id(session_id: str) -> str | None:
@@ -106,15 +141,12 @@ def session_to_match_id(session_id: str) -> str | None:
     params = {}
     data = _make_request(url, params)
 
-    match_id = data.get("matchIds", {}).get(session_id)
-    if match_id:
-        print(f"Session ID: {session_id}")
-        print(f"Match ID: {match_id}")
-        return match_id
-    else:
-        print("No match ID found in response.")
-        print(json.dumps(data, indent=2))
-        return None
+    match_ids = data.get("matchIds", {})
+    if not isinstance(match_ids, dict):
+        raise ValueError("Unexpected API response: `matchIds` was not an object.")
+
+    match_id = match_ids.get(session_id)
+    return match_id if isinstance(match_id, str) else None
 
 
 def fetch_tournaments(
@@ -160,7 +192,7 @@ def fetch_tournaments(
     return tournaments
 
 
-def get_team_players(epic_id: str, match_id: str):
+def get_team_players(epic_id: str, match_id: str) -> list[str]:
     """
     TODO: need a cheaper way to do this
     """
@@ -169,138 +201,109 @@ def get_team_players(epic_id: str, match_id: str):
 
     data = _make_request(url, params)
 
-    player_data: list[dict] = data.get("players", {})
-    team_players = [p["epicId"] for p in player_data]
-    if team_players:
-        print(f"Found {len(team_players)} players")
-        return team_players
-    else:
-        print("Could not find team players.")
-        print(json.dumps(data, indent=2))
-        return None
+    player_data = _extract_list(data, "players")
+    return [
+        p["epicId"]
+        for p in player_data
+        if isinstance(p.get("epicId"), str)
+    ]
 
 
-def fetch_match_players(match_id: str, out_dir="date/raw") -> str:
+def fetch_match_players(match_id: str) -> JsonList:
     """
     Fetch all match players, including spectators and bots, for a single match.
     """
     url = f"{BASE_URL}/matches/{match_id}/players"
     data = _make_request(url)
-    out_path =f"{out_dir}/match_{match_id}/players.json"
-    _save_json(data, out_path)
-    return out_path
+    return _extract_list(data, "players")
 
 
-def fetch_match_info(match_id: str, out_dir="data/raw") -> str:
+def fetch_match_info(match_id: str) -> JsonDict:
     url = f"{BASE_URL}/matches/{match_id}"
-    data = _make_request(url)
-    out_path =f"{out_dir}/match_{match_id}/info.json"
-    _save_json(data, out_path)
-    return out_path
+    return _make_request(url)
 
 
-def fetch_match_events(match_id: str, out_dir="data/raw") -> str:
+def fetch_match_events(
+    match_id: str,
+    *,
+    include: list[str] | None = None,
+) -> dict[str, JsonList]:
     url = f"{BASE_URL}/matches/{match_id}/events"
-
-    required_logs = [
-        "safeZoneUpdateEvents",
-        "reviveEvents",
-        "rebootEvents", 
-        "knockedDownEvents",
-        "eliminationEvents",
-        "playerInventoryUpdateEvents",
-        "landingEvents",
-        "healthUpdateEvents",
-        "shieldUpdateEvents"
-    ]
-
-    params = { "include": ",".join(required_logs) }
+    logs = include or REQUIRED_MATCH_EVENT_LOGS
+    params = { "include": ",".join(logs) }
     data = _make_request(url, params)
-    saved_paths = {}
 
-    match_dir = f"{out_dir}/match_{match_id}"
-    for event_type in required_logs:
-        if event_type in data and data[event_type]:
-            out_path = f"{match_dir}/{event_type}.json"
-            _save_json(data[event_type], out_path)
-            saved_paths[event_type] = out_path
-        else:
-            print(f"Warning: no data for {event_type} found in general events")
-
-    return out_path
+    return {
+        event_type: _extract_list(data, event_type)
+        for event_type in logs
+    }
 
 
 def fetch_match_movement_events(
-    match_id: str, 
-    out_dir="data/raw", 
-    start_time=0,
-    end_time=1650
-) -> str:
+    match_id: str,
+    *,
+    start_time: int = 0,
+    end_time: int = 1650,
+) -> JsonList:
     url = f"{BASE_URL}/matches/{match_id}/events/movement"
-    params = { "startTimeRelative": {start_time}, "endTimeRelative": {end_time} }
-    data = _make_request(url, params)["events"]
-    out_path = f"{out_dir}/match_{match_id}/movement_events.json"
-    _save_json(data, out_path)
-    return out_path
+    params = {"startTimeRelative": start_time, "endTimeRelative": end_time}
+    data = _make_request(url, params)
+    print(json.dumps(_extract_list(data, "events"), indent=2))
+    return _extract_list(data, "events")
 
 
 def fetch_match_shot_events(
     match_id: str,
-    out_dir="data/raw",
-    start_time=0,
-    end_time=1650
-) -> str:
+    *,
+    start_time: int = 0,
+    end_time: int = 1650,
+) -> JsonList:
 
     url = f"{BASE_URL}/matches/{match_id}/events/shots"
     params = {"startTimeRelative": start_time, "endTimeRelative": end_time}
-    data = _make_request(url, params)["hitscanEvents"]
-    out_path = f"{out_dir}/match_{match_id}/shot_events.json"
-    _save_json(data, out_path)
-    return out_path
-
-
-def fetch_match_weapons(match_id: str, out_dir = "data/raw"):
-    url = f"{BASE_URL}/matches/{match_id}/weapons"
-    params = {}
     data = _make_request(url, params)
-    out_path = f"{out_dir}/match_{match_id}/weapons.json"
-    _save_json(data, out_path)
-    return out_path
+    return _extract_list(data, "hitscanEvents")
 
 
-def fetch_event_window_data(event_window_id: str, out_dir="data/raw"):
+def fetch_match_weapons(match_id: str) -> JsonList:
+    url = f"{BASE_URL}/matches/{match_id}/weapons"
+    data = _make_request(url)
+    return _extract_list(data, "weapons")
+
+
+def fetch_event_window_data(event_window_id: str) -> JsonDict:
     url = f"{BASE_URL}/tournaments"
     params = { "eventWindowId": event_window_id }
-    data = _make_request(url, params)
-    out_path = f"{out_dir}/event_window_{event_window_id}/info.json"
-    _save_json(data, out_path)
-    return out_path
+    return _make_request(url, params)
 
 
-def fetch_by_event_window(event_window_id: str, out_dir="data/raw"):
+def fetch_event_window_matches(event_window_id: str) -> JsonList:
     url = f"{BASE_URL}/matches"
     params = { "eventWindowId": event_window_id, "ignoreUploads": True }
     data = _make_request(url, params)
-    out_path = f"{out_dir}/event_window_{event_window_id}/matches.json"
-    _save_json(data, out_path)
-    return out_path
+    return _extract_list(data, "matches")
 
 
-def fetch_by_event(event_id: str, out_dir="data/raw"):
+def fetch_event_matches(event_id: str) -> JsonList:
     url = f"{BASE_URL}/matches"
     params = { "eventId": event_id, "ignoreUploads": True }
     data = _make_request(url, params)
-    out_path = f"{out_dir}/event_window_{event_id}/matches.json"
-    _save_json(data, out_path)
-    return out_path
+    return _extract_list(data, "matches")
+
+
+def fetch_current_map(lang: str = "en") -> JsonDict:
+    url = f"{FNAPI_BASE_URL}"
+    params = {"lang": lang}
+    return _make_request(url, params)
 
 
 if __name__ == "__main__":
-    season = 37
-    # match_id = "832ceecc424df110d58e3e96d3dff834"
+    match_id = "832ceecc424df110d58e3e96d3dff834"
+    fetch_match_movement_events(match_id)
     # fetch_match_info(match_id)
-    event_window = "S29_FNCS_Major2_GrandFinalDay2_EU"
+    # event_window = "S29_FNCS_Major2_GrandFinalDay2_EU"
     # ew_data_path = fetch_event_window_data(event_window)
 
-    interval_seconds = 604800
-    print(json.dumps(fetch_tournaments(interval_seconds=interval_seconds), indent=2))
+    # interval_seconds = 604800
+    # print(json.dumps(fetch_tournaments(interval_seconds=interval_seconds), indent=2))
+    # print(json.dumps(fetch_current_map(), indent=2))
