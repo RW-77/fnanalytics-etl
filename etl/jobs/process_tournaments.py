@@ -5,221 +5,146 @@ from sqlalchemy import select
 import etl.api.osirion_client as osr
 import etl.db.loader as loader
 
-from etl.api.check_fetched import event_window_fetched, fetch_match_missing
-from etl.parsing.cleaning import get_id_to_name_map
+from etl.fetching.match_data_fetching import ensure_match_raw, ensure_event_window_raw
+from etl.parsing.match_parsing import parse_match
+from etl.parsing.event_parsing import parse_event_window_metadata, parse_event_window_matches
 
 from etl.db.models import (
     EventWindow,
     Match,
-    MatchPlayer,
-    DamageDealtEvent,
-    EliminationEvent,
-    get_session, reinit_db, get_engine
-)
-from etl.db.loader import (
-    load_event_window_metadata,
-    load_match_metadata,
-    load_match_players,
-    load_damage_dealt_events,
-    load_elimination_events
-)
-from etl.parsing.event_parser import parse_event_window_metadata, parse_event_matches
-from etl.parsing.match_parsing import (
-    parse_match_metadata, 
-    parse_match_players,
-    parse_elims, 
-    parse_damage_dealt, 
+    get_session, 
+    reinit_db, 
+    get_engine
 )
 
 
-def process_match(match_id: str, event_window_id: str, skip_if_exists: bool = False):
-    session = get_session()
+'''
+My current folder structure for my fortnite-tournament-logs bucket, which houses any data from the Osirion API, is split into:
 
-    # First process the match itself
-    try:
-        if skip_if_exists:
-            stmt = select(Match).where(Match.match_id == match_id)
-            existing = session.scalars(stmt).first()
-            if existing:
+matches/
+    832ceecc424df110d58e3e96d3dff834/
+        info.json
+        eliminationEvents.json
+        ...
+event_windows/
+    S33_FNCSMajor1_Final_Day1_EU/
+        info.json
+        matches.json
+'''
+
+def process_match(match_id: str, event_window_id: str, force: bool = False) -> bool:
+
+    if not force:
+        with get_session() as session:
+            match = session.get(Match, match_id)
+            if match and match.processed and not force:
                 print(f"⏭️  Match {match_id} already processed, skipping...")
                 return True
 
-        print(f"\n{'='*60}")
-        print(f"Processing match: {match_id}")
-        print(f"{'='*60}\n")
-        
-        print(f"Check that all event logs are fetched for match {match_id}...")
-        status = fetch_match_missing(match_id)
-        
-        # Raw data is guaranteed to be fetched by this point
-        match_data = parse_match_metadata(match_id)
+    raw = ensure_match_raw(match_id)
+    parsed = parse_match(raw)
 
-        # Needs to be added to the database entry
-        if event_window_id:
-            match_data["event_window_id"] = event_window_id
+    # First process the match itself
+    try:
+        with get_session() as session, session.begin():
 
-        players = parse_match_players(match_id)
-        elims = parse_elims(match_id)
-        damage_dealt = parse_damage_dealt(match_id)
+            print(f"\n{'='*60}")
+            print(f"Processing match: {match_id}")
+            print(f"{'='*60}\n")
+            
+            print(f"Check that all event logs are fetched for match {match_id}...")
 
-        # Load into database (all in one transaction)
-        print("\n💾 Loading into database...")
-        loader.load_match_metadata(match_data, session)
-        loader.load_match_players(players, match_id, session)
-        loader.load_damage_dealt_events(damage_dealt, match_id, session)
-        loader.load_elimination_events(elims, match_id, session)
-        
-        print(f"\n✅ Successfully processed match {match_id}\n")
-        return True
+            loader.load_match(parsed, event_window_id, session)
+            
+            print(f"\n✅ Successfully processed match {match_id}\n")
+            return True
 
     except Exception as e:
         print(f"\n❌ Error processing match {match_id}: {e}")
+
         import traceback
         traceback.print_exc()
-        session.rollback()
+
         return False
 
-    finally:
-        session.close()
 
-
-def process_event_window(event_window_id: str):
+def process_event_window(event_window_id: str, force: bool):
     """
     Process an entire event window
     """
-    session = get_session()
+    print(f"\n{'#'*60}")
+    print(f"Processing Event Window: {event_window_id}")
+    print(f"{'#'*60}\n")
 
-    try:
-        print(f"\n{'#'*60}")
-        print(f"Processing Event Window: {event_window_id}")
-        print(f"{'#'*60}\n")
+    if not force:
+        with get_session() as session:
+            event_window = session.get(EventWindow, event_window_id)
+            if event_window and event_window.processed:
+                print(f"Event window {event_window_id} already processed, skipping...")
+                return {}
 
-        # fetch from API and load into data/raw if not already done so
-        if not event_window_fetched(event_window_id).get("info"):
-            event_window_data_path = osr.fetch_event_window_data(event_window_id)
+    # fetch event window raw logs if needed (info.json and matches.json)
+    raw = ensure_event_window_raw(event_window_id)
+    # parse event window data
+    event_window_data = parse_event_window_metadata(raw)
+    matches = parse_event_window_matches(raw)
 
-        event_window_data = parse_event_window_metadata(event_window_id)
+    with get_session() as session, session.begin():
 
         # Check if event window exists
-        stmt = select(EventWindow).where(EventWindow.event_window_id == event_window_id)
-        event_window = session.scalars(stmt).first()
+        # idiomatically fetch by primary key
+        event_window = session.get(EventWindow, event_window_id)
 
-        if not event_window:
-            print(f"Event window {event_window_id} does not yet exist")
-            loader.load_event_window_metadata(event_window_data, session)
-            print("Got here.")
-            session.commit()
-            event_window = session.scalars(stmt).first()
+        # if the event window is not already in the DB
+        if event_window is None:
+            # print(f"Event window {event_window_id} does not yet exist")
+            event_window = loader.load_event_window_metadata(event_window_data, session)
 
-            if not event_window:
-                raise RuntimeError(f"Failed to create event window {event_window_id}")
-
-        if event_window.processed:
-            print(f"⏭️  Event window metadata already processed. Processing matches...")
-
+        # mark event window as processing
         event_window.processing = True
+        event_window.processed = False
+        event_window.failed = False
         event_window.last_processing_start = datetime.now(timezone.utc)
-        session.commit()
 
-    except Exception as e:
-        print(f"\n❌ Error loading event window: {e}")
-        session.rollback()
-        return {"status": "error", "error": str(e)}
 
-    finally:
-        session.close()  # Close event window session
-
+    results = {"total": len(matches), "successful": 0, "failed": 0}
 
     # get matches
     try:
-        # First, check if the matches for the current EventWindow have been fetched
-        # from Osirion's API
-        if not event_window_fetched(event_window_id).get("matches"):
-            # If not, fetch them
-            print(f"Need to fetch matches for event_window {event_window_id}")
-            matches_path = osr.fetch_by_event_window(event_window_id)
-
-        matches = parse_event_matches(event_window_id)
-
-        results = {"total": len(matches), "successful": 0, "failed": 0}
-
         # For each match parse
-        for i, match in enumerate(matches):
+        for match in matches:
+
             match_id = match["info"]["matchId"]
+            success = process_match(match_id, event_window_id, force=force)
+            results["successful" if success else "failed"] += 1
 
-            success = process_match(match_id, event_window_id, skip_if_exists=True)
-            if success:
-                results["successful"] += 1
-            else:
-                results["failed"] += 1
+        with get_session() as session, session.begin():
 
-        session = get_session()
+            event_window = session.get(EventWindow, event_window_id)
 
-        try:
-            stmt = select(EventWindow).where(EventWindow.event_window_id == event_window_id)
-            event_window = session.scalars(stmt).first()
+            if event_window:
+                event_window.processing = False
+                event_window.processed_matches = results["successful"]
+                event_window.processed = (results["failed"] == 0)
+                event_window.failed = (results["failed"] > 0)
 
-            if not event_window:
-                raise Exception("event window processing failed")
-
-            event_window.processing = False
-
-            if results["failed"] > results["total"] / 2:
-                event_window.failed = True
-                event_window.last_failed = datetime.now(timezone.utc)
-            else:
-                event_window.processed = True
-                event_window.last_processed = datetime.now(timezone.utc)
-
-            session.commit()
-
-            # Print summary
-            print(f"\n{'='*60}")
-            print(f"Event Window Complete: {event_window_id}")
-            print(f"{'='*60}")
-            print(f"Total: {results['total']}")
-            print(f"✅ Successful: {results['successful']}")
-            print(f"❌ Failed: {results['failed']}")
-            print(f"Status: {'PROCESSED' if event_window.processed else 'FAILED'}")
-            print(f"{'='*60}\n")
-            
-            return results
-
-        except Exception as e:
-            print(f"\n❌ Error updating event window status: {e}")
-            session.rollback()
-            return {"status": "error", "error": str(e)}
-
-        finally:
-            session.close()
-
+                if event_window.processed:
+                    event_window.last_processed = datetime.now(timezone.utc)
+                else:
+                    event_window.last_failed = datetime.now(timezone.utc)
 
     except Exception as e:
-        print(f"\n❌ Error processing matches: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        # Mark event window as failed
-        session = get_session()
-        try:
-            stmt = select(EventWindow).where(EventWindow.event_window_id == event_window_id)
-            event_window = session.scalars(stmt).first()
-            
-            if event_window:
+        with get_session() as session, session.begin():
+            event_window = session.get(EventWindow, event_window_id)
+            if event_window is not None:
                 event_window.processing = False
                 event_window.failed = True
                 event_window.last_failed = datetime.now(timezone.utc)
-                session.commit()
-        except Exception as cleanup_error:
-            print(f"⚠️  Failed to update event window status: {cleanup_error}")
-            session.rollback()
-        finally:
-            session.close()
-        
-        return {"status": "error", "error": str(e)}
+
+    return results
 
 
 if __name__ == "__main__":
     reinit_db() # Warning: will reinitialize entire DB
     event_window_id = "S33_FNCSMajor1_Final_Day1_EU"
-    process_event_window(event_window_id)
+    process_event_window(event_window_id, force=True)
