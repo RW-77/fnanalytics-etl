@@ -1,7 +1,23 @@
 import os
 
-from sqlalchemy import create_engine, String, Float, DateTime, Boolean, ForeignKey, Index, Integer
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session, sessionmaker
+from sqlalchemy import (
+    String, 
+    Float, 
+    DateTime, 
+    Boolean, 
+    ForeignKey, 
+    Index, 
+    Integer,
+    create_engine, 
+)
+from sqlalchemy.orm import (
+    DeclarativeBase, 
+    Mapped, 
+    Session, 
+    sessionmaker,
+    mapped_column, 
+    relationship, 
+)
 from datetime import datetime, timezone
 from typing import Optional, List
 
