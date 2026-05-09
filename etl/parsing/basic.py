@@ -1,5 +1,4 @@
 import os
-import json
 from platform import machine
 import pandas as pd
 import numpy as np
@@ -7,9 +6,8 @@ import numpy as np
 from bisect import bisect_left
 from collections import defaultdict
 from datetime import datetime
-from pathlib import Path
 
-from etl.parsing.cleaning import get_id_to_name_map
+from etl.types import RawMatchData
 
 
 coord3d = tuple[float, float, float]
@@ -86,16 +84,11 @@ def build_zone_timeline(zone_events: list[dict]):
     return zone_timeline
 
 
-def parse_match_metadata(match_id: str):
-    match_info_path = f"data/raw/match_{match_id}/info.json"
-    try:
-        with open(match_info_path, "r") as f:
-            match_info = json.load(f)
-    except FileNotFoundError:
-        raise ValueError(f"Match info not found at {match_info_path}")
+def parse_match_metadata(raw: RawMatchData):
+    match_info = raw.info
     
     return {
-        "match_id": match_id,
+        "match_id": raw.match_id,
         "event_id": match_info["eventId"],
         "event_window_id": match_info["eventWindowId"],
         "start_time": datetime.fromtimestamp(match_info["aircraftStartTime"] / 1e6),
@@ -108,13 +101,8 @@ def parse_match_metadata(match_id: str):
     }
 
 
-def parse_match_players(match_id: str) -> list[dict]:
-    match_players_path = f"data/raw/match_{match_id}/players.json"
-    try:
-        with open(match_players_path, "r") as f:
-            match_players = json.load(f).get("players", [])
-    except FileNotFoundError:
-        raise ValueError(f"Match players not found at {match_players_path}")
+def parse_match_players(raw: RawMatchData) -> list[dict]:
+    match_players = raw.players
     
     players = []
     for p in match_players:
@@ -129,28 +117,17 @@ def parse_match_players(match_id: str) -> list[dict]:
     print(f"Parsed {len(players)} players from {len(match_players)} total")
     return players
 
-
-def parse_elims(match_id: str):
-    print(f"Parsing eliminations for match {match_id}...")
+def parse_elims(raw: RawMatchData):
+    print(f"Parsing eliminations for match {raw.match_id}...")
     """
     Time
     Distance
     Weapon
     """
-    match_path = f"data/raw/match_{match_id}"
-
-    with (
-        open(f"{match_path}/info.json", "r") as f2,
-        open(f"{match_path}/human_elim_events.json", "r") as f3,
-        open(f"{match_path}/safeZoneUpdateEvents.json", "r") as f4,
-        open(f"{match_path}/movement_events.json") as f5,
-        open(f"{match_path}/shot_events.json") as f6,
-    ):
-        match_info = json.load(f2)
-        elim_events = json.load(f3)
-        zone_events = json.load(f4)
-        movement_events = json.load(f5)
-        shot_events = json.load(f6)
+    match_info = raw.info
+    elim_events = raw.elimination_events
+    zone_events = raw.zone_update_events
+    movement_events = raw.movement_events
 
     match_start = match_info["aircraftStartTime"]
     zone_timeline = build_zone_timeline(zone_events)
@@ -215,36 +192,24 @@ def parse_elims(match_id: str):
     return enriched_elim_events
 
 
-def parse_hitscan_elims(match_id: str) -> list[dict]:
+def parse_hitscan_elims(raw: RawMatchData) -> list[dict]:
     """
     Returns a time-ordered list of elimination events
 
     Parses shot_events instead of human_elim events
     """
 
-    print(f"Parsing eliminations(2) for match {match_id}...")
+    print(f"Parsing eliminations(2) for match {raw.match_id}...")
     """
     Time
     Distance
     Weapon
     """
-    match_path = f"data/raw/match_{match_id}"
 
-    zone_events_path = f"{match_path}/safeZoneUpdateEvents.json"
-    shot_events_path = f"{match_path}/human_shot_events.json"
-    movement_events_path = f"{match_path}/movement_events.json"
-    match_info_path = f"{match_path}/info.json"
-
-    with (
-        open(zone_events_path, "r") as f1,
-        open(movement_events_path, "r") as f2,
-        open(shot_events_path, "r") as f3,
-        open(match_info_path, "r") as f4,
-    ):
-        zone_events = json.load(f1)
-        movement_events = json.load(f2)
-        shot_events = json.load(f3)
-        match_info = json.load(f4)
+    match_info = raw.info
+    zone_events = raw.zone_update_events
+    movement_events = raw.movement_events
+    shot_events = raw.shot_events
 
     match_start = match_info["aircraftStartTime"]
 
@@ -308,30 +273,18 @@ def parse_hitscan_elims(match_id: str) -> list[dict]:
     return enriched_damage_events
 
 
-def parse_damage_dealt(match_id: str):
-    print(f"Parsing damage dealt for match {match_id}...")
+def parse_damage_dealt(raw: RawMatchData):
+    print(f"Parsing damage dealt for match {raw.match_id}...")
     """
     Time
     Distance
     Weapon
     """
-    match_path = f"data/raw/match_{match_id}"
 
-    zone_events_path = f"{match_path}/safeZoneUpdateEvents.json"
-    shot_events_path = f"{match_path}/human_shot_events.json"
-    movement_events_path = f"{match_path}/movement_events.json"
-    match_info_path = f"{match_path}/info.json"
-
-    with (
-        open(zone_events_path, "r") as f1,
-        open(movement_events_path, "r") as f2,
-        open(shot_events_path, "r") as f3,
-        open(match_info_path, "r") as f4,
-    ):
-        zone_events = json.load(f1)
-        movement_events = json.load(f2)
-        shot_events = json.load(f3)
-        match_info = json.load(f4)
+    match_info = raw.info
+    zone_events = raw.zone_update_events
+    movement_events = raw.movement_events
+    shot_events = raw.shot_events
 
     match_start = match_info["aircraftStartTime"]
 
@@ -388,99 +341,6 @@ def parse_damage_dealt(match_id: str):
 
     return enriched_damage_events
 
-
-def parse_assists(match_id: str):
-    match_path = Path("data/raw/match_{match_id}")
-
-    # exclude metadata like players and info
-    match_logs = [
-        "shot_events",
-        "eliminationEvents",
-        "healthUpdateEvents",
-        "shieldUpdateEvents",
-    ]
-    with (
-        open(f"{match_path}/info.json", "r") as f1,
-    ):
-        info = json.load(f1)
-    data = {}
-    for filename in match_logs:
-        with open(match_path / f"{filename}.json", "r") as f:
-            data[filename] = json.load(f)
-
-    all_events = []
-
-    for event in data["shot_events"]:
-        if event.get("hitPlayer"):
-            all_events.append({
-                "type": "damage",
-                "timestamp": event["timestamp"],
-                "data": event
-            })
-    for event in data["eliminationEvents"]:
-        all_events.append({
-            "type": "elimination",
-            "timestamp": event["timestamp"],
-            "data": event
-        })
-    for event in data["healthUpdateEvents"]:
-        all_events.append({
-            "type": "health_update",
-            "timestamp": event["timestamp"],
-            "data": event
-        })
-    for event in data["shieldUpdateEvents"]:
-        all_events.append({
-            "type": "shield_update",
-            "timestamp": event["timestamp"],
-            "data": event
-        })
-
-    all_events.sort(key=lambda x: x["timestamp"])
-
-    print(f"Merged {len(all_events)} total events:")
-    print(f"  - {sum(1 for e in all_events if e['type'] == 'damage')} damage events")
-    print(f"  - {sum(1 for e in all_events if e['type'] == 'elimination')} elimination events")
-    print(f"  - {sum(1 for e in all_events if e['type'] == 'health_update')} health updates")
-    print(f"  - {sum(1 for e in all_events if e['type'] == 'shield_update')} shield updates")
-
-    assist_events = []
-    player_map: dict = get_id_to_name_map(match_id)
-    state = {
-        id: {
-            "hp": 100,
-            "shield": 0,
-            "hp_hits": [],
-            "shield_hits": []
-        } for id in player_map.keys()
-    }
-    
-    for event in all_events:
-        if event["type"] == "damage":
-            pass
-
-        elif event["type"] == "health_update":
-            health_update = event["data"]
-            id = health_update["epicId"]
-            curr = state[id]
-            # check if corresponds with a shot event, or other type
-            health_diff = curr["hp"] - health_update["value"]
-            if health_diff > 0:
-                # heal event
-                pass
-            elif health_diff < 0:
-                # damage event
-                pass
-
-        elif event["type"] == "shield_update":
-            shield_update_event = event["data"]
-            id = shield_update_event["epicId"]
-
-        elif event["type"] == "elimination":
-            pass
-        
-
-    return assist_events
 
 
 if __name__ == "__main__":
