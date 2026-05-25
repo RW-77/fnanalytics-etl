@@ -16,7 +16,6 @@ from etl.types import JsonDict, JsonList
 load_dotenv()
 
 BASE_URL = "https://api.osirion.gg/fortnite/v1"
-FNAPI_BASE_URL = "https://fnapi.osirion.gg/v1/maps"
 API_KEY = os.getenv("API_KEY") 
 
 if not API_KEY:
@@ -153,6 +152,7 @@ def fetch_tournaments(
     interval_seconds: int,
     include_progress: bool = True,
     season: int | None = None,
+    event_window_id: str | None = None,
     limit: int = 100,
     from_index: int = 0,
 ) -> list[dict[str, Any]]:
@@ -169,6 +169,52 @@ def fetch_tournaments(
     while True:
         params: dict[str, Any] = {
             "intervalS": interval_seconds,
+            "includeProgress": include_progress,
+            "fromIndex": current_from_index,
+            "limit": limit,
+        }
+        if season is not None:
+            params["season"] = season
+
+        if event_window_id is not None:
+            params["eventWindowId"] = event_window_id
+
+        data = _make_request(url, params)
+        batch = data.get("tournaments", [])
+
+        if not isinstance(batch, list):
+            raise ValueError("Unexpected API response: `tournaments` was not a list.")
+
+        tournaments.extend(batch)
+
+        if not batch or len(batch) < limit:
+            break
+
+        current_from_index += len(batch)
+
+    return tournaments
+
+
+def fetch_tournaments_by_event_window_id(
+    event_window_id: str,
+    include_progress: bool = True,
+    season: int | None = None,
+    limit: int = 100,
+    from_index: int = 0,
+) -> list[dict[str, Any]]:
+    """
+    Fetch tournament/event-window metadata for a specific event window with pagination.
+
+    This mirrors ``fetch_tournaments`` but scopes requests by ``eventWindowId``
+    instead of requiring an interval.
+    """
+    url = f"{BASE_URL}/tournaments"
+    tournaments: list[dict[str, Any]] = []
+    current_from_index = from_index
+
+    while True:
+        params: dict[str, Any] = {
+            "eventWindowId": event_window_id,
             "includeProgress": include_progress,
             "fromIndex": current_from_index,
             "limit": limit,
@@ -248,7 +294,6 @@ def fetch_match_movement_events(
     url = f"{BASE_URL}/matches/{match_id}/events/movement"
     params = {"startTimeRelative": start_time, "endTimeRelative": end_time}
     data = _make_request(url, params)
-    print(json.dumps(_extract_list(data, "events"), indent=2))
     return _extract_list(data, "events")
 
 
@@ -291,19 +336,6 @@ def fetch_event_matches(event_id: str) -> JsonList:
     return _extract_list(data, "matches")
 
 
-def fetch_current_map(lang: str = "en") -> JsonDict:
-    url = f"{FNAPI_BASE_URL}"
-    params = {"lang": lang}
-    return _make_request(url, params)
-
-
 if __name__ == "__main__":
-    match_id = "832ceecc424df110d58e3e96d3dff834"
-    fetch_match_movement_events(match_id)
-    # fetch_match_info(match_id)
-    # event_window = "S29_FNCS_Major2_GrandFinalDay2_EU"
-    # ew_data_path = fetch_event_window_data(event_window)
-
-    # interval_seconds = 604800
-    # print(json.dumps(fetch_tournaments(interval_seconds=interval_seconds), indent=2))
-    # print(json.dumps(fetch_current_map(), indent=2))
+    event_window_id = "S36_PerformanceEvaluation_Event6Round2_EU"
+    print(json.dumps(fetch_tournaments_by_event_window_id(event_window_id), indent=2))
