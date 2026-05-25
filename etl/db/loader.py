@@ -1,62 +1,61 @@
 from datetime import datetime
 
+from sqlalchemy import delete, insert, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from etl.db.models import (
-    EventWindow, 
-    Match, 
-    MatchPlayer, 
-    DamageDealtEvent, 
-    EliminationEvent, 
+    EventWindow,
+    Match,
+    MatchPlayer,
+    DamageDealtEvent,
+    EliminationEvent,
+    Tournament,
 )
+from etl.parsing.tournament_metadata import TournamentMetadata
 from etl.types import ParsedMatchData
 
 
-def load_event_window_metadata(event_window_metadata: dict, session: Session) -> EventWindow: 
-    event_window_id = event_window_metadata["event_window_id"]
-    existing_event_window = session.query(EventWindow).filter_by(event_window_id=event_window_id).first()
-    if existing_event_window:
-        print(f"Event window {event_window_id} already exists in database")
-        return existing_event_window
-    
-    event_window = EventWindow(
-        event_window_id=event_window_metadata["event_window_id"],
-        start_time=event_window_metadata["start_time"],
-        end_time=event_window_metadata["end_time"],
-        total_matches=event_window_metadata["total_matches"]
+def ensure_tournament(metadata: TournamentMetadata, session: Session) -> None:
+    """Insert a Tournament row if one doesn't already exist.
+
+    Uses ``INSERT … ON CONFLICT DO NOTHING`` so that any field manually
+    edited downstream (a curated title, a season fix) is never clobbered
+    by a re-ingest. To force a re-derivation of an existing row, delete
+    the row first or update it explicitly.
+    """
+    stmt = (
+        pg_insert(Tournament)
+        .values(
+            tournament_id=metadata.tournament_id,
+            title=metadata.title,
+            season_code=metadata.season_code,
+        )
+        .on_conflict_do_nothing(index_elements=[Tournament.tournament_id])
     )
+    session.execute(stmt)
 
-    session.add(event_window)
-    session.flush()
 
-    print(f"✅ Created event window record: {event_window_id}")
+def load_event_window_metadata(event_window_metadata: dict, session: Session) -> EventWindow:
+    """Upsert an EventWindow row.
 
-    return event_window
+    Columns not present in ``event_window_metadata`` (e.g. ``status``,
+    ``last_processed``, ``created_at``) are preserved on existing rows
+    because ``Session.merge`` only copies attributes that were explicitly
+    set on the source object.
+    """
+    event_window = EventWindow(**event_window_metadata)
+    return session.merge(event_window)
 
 
 def load_match_metadata(match_metadata: dict, session: Session) -> Match:
-    match_id = match_metadata["match_id"]
-    existing_match = session.query(Match).filter_by(match_id=match_id).first()
-    if existing_match:
-        print(f"Match {match_id} already exists in database")
-        return existing_match
-    
-    match = Match(
-        match_id=match_metadata["match_id"],
-        event_window_id=match_metadata["event_window_id"],
-        event_id=match_metadata["event_id"],
-        start_time=match_metadata["start_time"],
-        end_time=match_metadata["end_time"],
-        gamemode=match_metadata["gamemode"],
-        duration=match_metadata["duration"],
-        player_count=match_metadata["player_count"],
-    )
+    """Upsert a Match row, preserving processing-status columns.
 
-    session.add(match)
-    session.flush()
-
-    print(f"✅ Created match record: {match_id}")
-    return match
+    See :func:`load_event_window_metadata` for the merge semantics that
+    make this safe across re-ingests.
+    """
+    match = Match(**match_metadata)
+    return session.merge(match)
 
 
 def load_match_players(
@@ -80,45 +79,45 @@ def load_match_players(
     if not players_data:
         print("⚠️  No players to load")
         return {}
-    
-    print(f"Loading {len(players_data)} players for match {match_id}...")
-    
-    existing_players = session.query(MatchPlayer).filter_by(match_id=match_id).all()
-    existing_player_ids = {
-        player.epic_id
-        for player in existing_players
-    }
-    
-    players_created = 0
-    for player in players_data:
-        player_id = player["epic_id"]
-        
-        # Check if player already exists for this match
-        if player_id in existing_player_ids:
-            continue
-        
-        # Create new player record
-        new_player = MatchPlayer(
-            epic_id=player_id,
-            epic_username=player["epic_username"],
-            match_id=match_id
-        )
-        
-        session.add(new_player)
-        players_created += 1
-    
-    session.flush()
-    
-    if players_created > 0:
-        print(f"✅ Created {players_created} new player records")
-    else:
-        print(f"ℹ️  All {len(players_data)} players already exist for this match")
 
-    player_rows = session.query(MatchPlayer).filter_by(match_id=match_id).all()
-    return {
-        player.epic_id: player.id
-        for player in player_rows
-    }
+    print(f"Loading {len(players_data)} players for match {match_id}...")
+
+    # Pull only the two columns we need for the lookup map; avoids loading
+    # full ORM objects we don't intend to use. ``.tuples()`` gives Pyright
+    # a concrete ``Sequence[tuple[str, int]]`` so ``dict()`` resolves cleanly.
+    id_map: dict[str, int] = dict(
+        session.execute(
+            select(MatchPlayer.epic_id, MatchPlayer.id)
+            .where(MatchPlayer.match_id == match_id)
+        ).tuples().all()
+    )
+
+    new_rows = [
+        {
+            "epic_id": p["epic_id"],
+            "epic_username": p["epic_username"],
+            "match_id": match_id,
+        }
+        for p in players_data
+        if p["epic_id"] not in id_map
+    ]
+
+    if not new_rows:
+        print(f"ℹ️  All {len(players_data)} players already exist for this match")
+        return id_map
+
+    # Insert + RETURNING in one round trip. SQLAlchemy 2.x's
+    # "insertmanyvalues" feature preserves the input order on PostgreSQL,
+
+    result = session.execute(
+        insert(MatchPlayer).returning(MatchPlayer.epic_id, MatchPlayer.id),
+        new_rows,
+    )
+    for epic_id, pk in result:
+        id_map[epic_id] = pk
+
+    print(f"✅ Created {len(new_rows)} new player records")
+    return id_map
     
 
 def load_damage_events(
@@ -132,7 +131,7 @@ def load_damage_events(
     
     Args:
         `damage_events`: List of damage event dictionaries from parse_damage_dealt() with keys:
-            - `timestamp` (int): Unix timestamp in milliseconds
+            - `timestamp` (int): Unix timestamp in microseconds
             - `actor_id` (str): Shooter's Epic ID
             - `recipient_id` (str): Victim's Epic ID
             - `weapon_id` (str): Weapon identifier
@@ -156,8 +155,8 @@ def load_damage_events(
     # Prepare records for bulk insert
     damage_records = []
     for event in damage_events:
-        # Convert timestamp from milliseconds to datetime
-        timestamp_dt = datetime.fromtimestamp(event["timestamp"] / 1000)
+        # Raw Osirion event timestamps are in microseconds.
+        timestamp_dt = datetime.fromtimestamp(event["timestamp"] / 1e6)
         
         actor_db_id = player_id_map.get(event["actor_id"])
         recipient_db_id = player_id_map.get(event["recipient_id"])
@@ -188,7 +187,7 @@ def load_damage_events(
         })
     
     # Bulk insert using SQLAlchemy
-    session.bulk_insert_mappings(DamageDealtEvent, damage_records) # type: ignore
+    session.execute(insert(DamageDealtEvent), damage_records)
     
     print(f"✅ Loaded {len(damage_records)} damage events")
     return len(damage_records)
@@ -205,7 +204,7 @@ def load_elimination_events(
     
     Args:
         elim_events: List of elimination event dictionaries from parse_elims() with keys:
-            - timestamp (int): Unix timestamp in milliseconds
+            - timestamp (int): Unix timestamp in microseconds
             - actor_id (str): Eliminator's Epic ID
             - recipient_id (str): Victim's Epic ID
             - weapon_id (str): Weapon identifier
@@ -228,8 +227,8 @@ def load_elimination_events(
     # Prepare records for bulk insert
     elim_records = []
     for event in elim_events:
-        # Convert timestamp from milliseconds to datetime
-        timestamp_dt = datetime.fromtimestamp(event["timestamp"] / 1000)
+        # Raw Osirion event timestamps are in microseconds.
+        timestamp_dt = datetime.fromtimestamp(event["timestamp"] / 1e6)
 
         actor_db_id = player_id_map.get(event["actor_id"])
         recipient_db_id = player_id_map.get(event["recipient_id"])
@@ -259,22 +258,42 @@ def load_elimination_events(
         })
     
     # Bulk insert using SQLAlchemy
-    session.bulk_insert_mappings(EliminationEvent, elim_records) # type: ignore
+    session.execute(insert(EliminationEvent), elim_records)
     
     print(f"✅ Loaded {len(elim_records)} elimination events")
     return len(elim_records)
 
 
-def load_match(parsed: ParsedMatchData, event_window_id: str, session: Session) -> None:
+def load_match_relational(parsed: ParsedMatchData, event_window_id: str, session: Session) -> Match:
+    """Idempotently (re-)load a single match and all of its child rows.
 
+    The Match row itself is upserted so that processing-status columns
+    (``status``, ``last_processed``, …) survive a re-ingest. The child
+    rows are wiped and re-inserted: deleting MatchPlayer rows cascades
+    to DamageDealtEvent and EliminationEvent via the ``ON DELETE
+    CASCADE`` foreign keys on ``actor_id`` / ``recipient_id``.
+    """
     metadata = dict(parsed.metadata)
-    metadata["event_window_id"] = event_window_id
 
-    load_match_metadata(metadata, session)
+    raw_event_window_id = metadata["event_window_id"]
+    if raw_event_window_id != event_window_id:
+        raise ValueError(
+            f"Match {parsed.match_id} belongs to event window {raw_event_window_id}, "
+            f"but was queued under {event_window_id}."
+        )
+
+    match = load_match_metadata(metadata, session)
+
+    # Wipe child rows; CASCADE on the event-table FKs handles the rest.
+    session.execute(
+        delete(MatchPlayer).where(MatchPlayer.match_id == parsed.match_id)
+    )
+    session.flush()  # ensure DELETE lands before we re-INSERT players
+
     player_id_map = load_match_players(parsed.players, parsed.match_id, session)
     load_damage_events(parsed.damage, parsed.match_id, player_id_map, session)
     load_elimination_events(parsed.elims, parsed.match_id, player_id_map, session)
-    session.commit()
+    return match
 
 
 if __name__ == "__main__":

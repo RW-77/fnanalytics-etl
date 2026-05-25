@@ -1,29 +1,19 @@
-import os
-
 from sqlalchemy import (
-    String, 
-    Float, 
-    DateTime, 
-    Boolean, 
-    ForeignKey, 
-    Index, 
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
     Integer,
-    create_engine, 
+    Interval,
+    String,
 )
 from sqlalchemy.orm import (
-    DeclarativeBase, 
-    Mapped, 
-    Session, 
-    sessionmaker,
-    mapped_column, 
-    relationship, 
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+    relationship,
 )
-from datetime import datetime, timezone
-from typing import Optional, List
-
-from dotenv import load_dotenv
-
-load_dotenv()
+from datetime import datetime, timedelta, timezone
 
 
 class Base(DeclarativeBase):
@@ -56,38 +46,61 @@ class Event(Base):
     __tablename__ = "events"
 
     event_id: Mapped[str] = mapped_column(String(100), primary_key=True)
-    start_time: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None, nullable=True)
-    end_time: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None, nullable=True)
-    
+    start_time: Mapped[datetime | None] = mapped_column(DateTime, default=None, nullable=True)
+    end_time: Mapped[datetime | None] = mapped_column(DateTime, default=None, nullable=True)
+
     def __repr__(self):
         return f"<Event(event_id={self.event_id})>"
+
+
+class Tournament(Base):
+    """A logical grouping of event windows that share a ``tournament_id``.
+
+    Per-tournament metadata that isn't derivable from the event-window ID
+    alone (notably the human-readable ``title``) lives here. The loader
+    populates rows with derived values on first ingest and never overwrites
+    them, so manual edits via psql or a future admin UI are durable.
+    """
+    __tablename__ = "tournaments"
+
+    tournament_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    title: Mapped[str | None] = mapped_column(String(200), default=None)
+    season_code: Mapped[str | None] = mapped_column(String(4), default=None)
+
+    def __repr__(self):
+        return f"<Tournament(tournament_id={self.tournament_id}, title={self.title!r})>"
 
 
 class EventWindow(Base):
     __tablename__ = "event_windows"
 
     event_window_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    event_id: Mapped[str | None] = mapped_column(String(100))
     
-    # Processing status flags
-    processing: Mapped[bool] = mapped_column(Boolean, default=False)
-    processed: Mapped[bool] = mapped_column(Boolean, default=False)
-    failed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Processing status
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_processing_start: Mapped[datetime | None] = mapped_column()
+    last_processed: Mapped[datetime | None] = mapped_column()
+    last_failed: Mapped[datetime | None] = mapped_column()
 
-    # Timestamps
-    discovered_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    last_processing_start: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None)
-    last_processed: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None)
-    last_failed: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None)
+    # Match metadata
+    start_time: Mapped[datetime | None] = mapped_column()
+    end_time: Mapped[datetime | None] = mapped_column()
 
-    start_time: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None, nullable=True)
-    end_time: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None, nullable=True)
+    total_matches: Mapped[int] = mapped_column(default=0)
+    processed_matches: Mapped[int] = mapped_column(default=0)
 
-    total_matches: Mapped[int] = mapped_column(Integer, default=0)
-    processed_matches: Mapped[int] = mapped_column(Integer, default=0)
+    # Classification metadata
+    tournament_id: Mapped[str | None] = mapped_column()
+    region_code: Mapped[str | None] = mapped_column(String(4))
+    season_code: Mapped[str | None] = mapped_column(String(4))
+    day_index: Mapped[int | None] = mapped_column()
+
 
     # Relationships
-    matches: Mapped[List["Match"]] = relationship(back_populates="event_window")
-    weapons: Mapped[List["Weapon"]] = relationship(back_populates="event_window")
+    matches: Mapped[list["Match"]] = relationship(back_populates="event_window")
+    weapons: Mapped[list["Weapon"]] = relationship(back_populates="event_window")
 
     def __repr__(self):
         return f"<EventWindow(event_window_id={self.event_window_id})>"
@@ -99,30 +112,45 @@ class Match(Base):
     match_id: Mapped[str] = mapped_column(String(50), primary_key=True)
 
     # Foreign keys
-    event_window_id: Mapped[str] = mapped_column(String(50), ForeignKey("event_windows.event_window_id"))
+    event_window_id: Mapped[str] = mapped_column(String(100), ForeignKey("event_windows.event_window_id"))
 
     # Processing status
-    processing: Mapped[bool] = mapped_column(Boolean, default=False)
-    processed: Mapped[bool] = mapped_column(Boolean, default=False)
-    failed: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_processing_start: Mapped[datetime | None] = mapped_column(DateTime, default=None, nullable=True)
+    last_processed: Mapped[datetime | None] = mapped_column(DateTime, default=None, nullable=True)
+    last_failed: Mapped[datetime | None] = mapped_column(DateTime, default=None, nullable=True)
     
     # Match metadata
-    event_id: Mapped[Optional[str]] = mapped_column(String(100), default=None)
-    start_time: Mapped[datetime] = mapped_column(DateTime)
-    end_time: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None)
-    gamemode: Mapped[Optional[str]] = mapped_column(String(100), default=None)
-    duration: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None)
-    player_count: Mapped[Optional[int]] = mapped_column(Integer, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    event_id: Mapped[str | None] = mapped_column(String(100), default=None)
+    map_path: Mapped[String | None] = mapped_column(String, default=None)
+    start_time: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    end_time: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    gamemode: Mapped[str | None] = mapped_column(String(100), default=None)
+    duration: Mapped[timedelta | None] = mapped_column(Interval, default=None)
+    player_count: Mapped[int | None] = mapped_column(Integer, default=None)
     
     # Relationships
     event_window: Mapped["EventWindow"] = relationship(back_populates="matches")
-    damage_dealt_events: Mapped[List["DamageDealtEvent"]] = relationship(back_populates="match")
-    elim_events: Mapped[List["EliminationEvent"]] = relationship(back_populates="match")
-    players: Mapped[List["MatchPlayer"]] = relationship(back_populates="match")
 
     def __repr__(self):
         return f"<Match(match_id={self.match_id})>"
+
+    players: Mapped[list["MatchPlayer"]] = relationship(
+        back_populates="match",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    damage_dealt_events: Mapped[list["DamageDealtEvent"]] = relationship(
+        back_populates="match",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    elim_events: Mapped[list["EliminationEvent"]] = relationship(
+        back_populates="match",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class MatchPlayer(Base):
@@ -132,15 +160,17 @@ class MatchPlayer(Base):
 
     epic_id: Mapped[str] = mapped_column(String(100))
     epic_username: Mapped[str] = mapped_column(String(100))
-    match_id: Mapped[str] = mapped_column(String(50), ForeignKey("matches.match_id"))
+    match_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("matches.match_id", ondelete="CASCADE")
+    )
 
     # Relationships
     match: Mapped["Match"] = relationship(back_populates="players")
-    damage_dealt: Mapped[List["DamageDealtEvent"]] = relationship(
+    damage_dealt: Mapped[list["DamageDealtEvent"]] = relationship(
         foreign_keys="DamageDealtEvent.actor_id", 
         back_populates="actor"
     )
-    damage_taken: Mapped[List["DamageDealtEvent"]] = relationship(
+    damage_taken: Mapped[list["DamageDealtEvent"]] = relationship(
         foreign_keys="DamageDealtEvent.recipient_id", 
         back_populates="recipient"
     )
@@ -158,17 +188,23 @@ class DamageDealtEvent(Base):
     __tablename__ = "damage_dealt_events"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    match_id: Mapped[str] = mapped_column(String(50), ForeignKey("matches.match_id"))
+    match_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("matches.match_id", ondelete="CASCADE")
+    )
     timestamp: Mapped[datetime] = mapped_column(DateTime)
-    game_time_seconds: Mapped[Optional[int]] = mapped_column(Integer, default=None)
-    
+    game_time_seconds: Mapped[int | None] = mapped_column(Integer, default=None)
+
     # Foreign keys to players
-    actor_id: Mapped[int] = mapped_column(Integer, ForeignKey("match_players.id"), nullable=True)
-    recipient_id: Mapped[int] = mapped_column(Integer, ForeignKey("match_players.id"), nullable=True)
+    actor_id: Mapped[int] = mapped_column(
+        ForeignKey("match_players.id", ondelete="CASCADE"), nullable=True
+    )
+    recipient_id: Mapped[int] = mapped_column(
+        ForeignKey("match_players.id", ondelete="CASCADE"), nullable=True
+    )
     
     # Weapon info
     weapon_id: Mapped[str] = mapped_column(String(100))
-    weapon_type: Mapped[Optional[str]] = mapped_column(String(50), default=None)
+    weapon_type: Mapped[str | None] = mapped_column(String(50), default=None)
     damage_amount: Mapped[float] = mapped_column(Float)
     
     # Positions
@@ -211,17 +247,23 @@ class EliminationEvent(Base):
     __tablename__ = "elimination_events"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    match_id: Mapped[str] = mapped_column(String(50), ForeignKey("matches.match_id"))
+    match_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("matches.match_id", ondelete="CASCADE")
+    )
     timestamp: Mapped[datetime] = mapped_column(DateTime)
-    game_time_seconds: Mapped[Optional[int]] = mapped_column(Integer, default=None)
-    
+    game_time_seconds: Mapped[int | None] = mapped_column(Integer, default=None)
+
     # Foreign keys to players
-    actor_id: Mapped[int] = mapped_column(Integer, ForeignKey("match_players.id"))
-    recipient_id: Mapped[int] = mapped_column(Integer, ForeignKey("match_players.id"))
+    actor_id: Mapped[int] = mapped_column(
+        ForeignKey("match_players.id", ondelete="CASCADE")
+    )
+    recipient_id: Mapped[int] = mapped_column(
+        ForeignKey("match_players.id", ondelete="CASCADE")
+    )
     
     # Weapon info
     weapon_id: Mapped[str] = mapped_column(String(100))
-    weapon_type: Mapped[Optional[str]] = mapped_column(String(50), default=None)
+    weapon_type: Mapped[str | None] = mapped_column(String(50), default=None)
     
     # Positions
     actor_x: Mapped[float] = mapped_column(Float)
@@ -246,36 +288,3 @@ class EliminationEvent(Base):
 
     def __repr__(self):
         return f"<EliminationEvent(actor_id={self.actor_id}, recipient_id={self.recipient_id}, match_id={self.match_id})>"
-
-
-# Database connection functions
-def get_engine():
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise ValueError("DATABASE_URL not set in .env")
-    return create_engine(database_url, echo=False)
-
-
-def get_session() -> Session:
-    engine = get_engine()
-    SessionLocal = sessionmaker(bind=engine)
-    return SessionLocal()
-
-
-def init_db():
-    """Create all tables"""
-    engine = get_engine()
-    Base.metadata.create_all(engine)
-    print("✅ Database tables created")
-
-
-def reinit_db():
-    """Drop and recreate all tables (WARNING: deletes all data)"""
-    engine = get_engine()
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
-    print("✅ Database reinitialized")
-
-
-if __name__ == "__main__":
-    init_db()
