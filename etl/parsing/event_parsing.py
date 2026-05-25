@@ -3,11 +3,16 @@ from datetime import datetime
 
 from etl.api.osirion_client import fetch_event_window_matches
 from etl.types import RawEventWindowData
+from etl.parsing.tournament_classification import classify_event_window_id
 
 
 def parse_event_window_metadata(raw: RawEventWindowData):
+    classification = classify_event_window_id(raw.event_window_id)
+
     event_window_info = raw.info
     event_window_matches = raw.matches
+
+    event_id = raw.info["tournaments"][0]["eventId"]
 
     event_window_matches.sort(key=lambda e: e["info"]["startTimestamp"])
     total_matches = len(event_window_matches)
@@ -27,9 +32,14 @@ def parse_event_window_metadata(raw: RawEventWindowData):
 
     return {
         "event_window_id": raw.event_window_id,
+        "event_id": event_id,
         "start_time": start_time,
         "end_time": end_time,
-        "total_matches": total_matches
+        "total_matches": total_matches,
+        "tournament_id": classification.tournament_id if classification else None,
+        "region_code": classification.region_code if classification else None,
+        "season_code": classification.season_code if classification else None,
+        "day_index": classification.day_index if classification else None
     }
 
 
