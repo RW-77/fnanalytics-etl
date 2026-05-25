@@ -1,13 +1,9 @@
-import os
-from platform import machine
-import pandas as pd
 import numpy as np
 
-from bisect import bisect_left
-from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from etl.types import RawMatchData
+from etl.parsing.indexing import indexed_events
 
 
 coord3d = tuple[float, float, float]
@@ -22,66 +18,40 @@ def calculate_distances(
     return np.sqrt(np.sum(diff**2, axis=1))
 
 
-def indexed_events(
-    reference_events: list[dict],
-    player_events: list[dict]
-) -> defaultdict[str, dict[str, dict]]:
+def _sorted_zone_events(zone_events: list[dict]) -> list[dict]:
     """
-    Returns for each player, the event belonging to them in `player_events` 
-    occuring closest in time to each event in `reference_events`.
+    Return safe zone updates ordered by the time each phase ends.
 
-    Results will reflect the same order as `reference_events` when passed in.
-
-    This will allow, for a given reference event, instant lookup of all player
-    events that occurred.
+    Some payloads include a replay-event `timestamp`, while older cached samples
+    only expose shrink timings. We only need stable chronological ordering to
+    map a gameplay event onto the phase that was active at that time.
     """
+    if not zone_events:
+        raise ValueError("Match did not include any safe zone update events.")
 
-    target_ts = np.array([e["timestamp"] for e in reference_events])
-    sorted_per_player = defaultdict(list)
-
-    # Created sorted list of `player_events` for each player
-    for e in player_events:
-        sorted_per_player[e["epicId"]].append(e)
-    for player_id in sorted_per_player:
-        sorted_per_player[player_id].sort(key=lambda e: e["timestamp"])
-
-    cache = defaultdict(dict)
-    # operates on all the `player_events` of a player at once
-    for player_id, events in sorted_per_player.items():
-        event_ts = np.array([e["timestamp"] for e in events])
-        indices = np.searchsorted(event_ts, target_ts)
-        indices = np.clip(indices, 1, len(event_ts)-1)
-
-        before = event_ts[indices - 1]
-        after = event_ts[indices]
-
-        # pick the closer shot (in time)
-        choose_after = np.abs(after - target_ts) < np.abs(before - target_ts)
-        closest_idxs = np.where(choose_after, indices, indices - 1)
-
-        # Extract the movement events
-        closest_player_events = [events[i] for i in closest_idxs]
-
-        # Store results
-        cache[player_id]["timestamps"] = event_ts
-        cache[player_id]["closest_indices"] = closest_idxs
-        # cache[player_id]["closest_events"][i] is the closest event of player_id to the i-th reference event
-        cache[player_id]["closest_events"] = closest_player_events
-
-    return cache
+    return sorted(
+        zone_events,
+        key=lambda event: (
+            event["shrinkEndTime"],
+            event.get("timestamp", event.get("shrinkStartTime", 0)),
+            event["currentPhase"],
+        ),
+    )
 
 
-def build_zone_timeline(zone_events: list[dict]):
+def _zone_for_timestamp(ordered_zone_events: list[dict], timestamp: int) -> int:
+    """
+    Find the current phase for an event timestamp with a simple linear scan.
 
-    assert len(zone_events) == 12, f"Expected 12 zone events, got {len(zone_events)}"
-    
-    zone_timeline = []
-    zone_events.sort(key=lambda e: e["currentPhase"])
-    
-    for i, zone_event in enumerate(zone_events):
-        end_time = zone_event["shrinkEndTime"]
-        zone_timeline.append(end_time)
-    return zone_timeline
+    We stop at the first zone whose `shrinkEndTime` still contains the event.
+    If the timestamp lands after every known shrink, we keep the last phase
+    instead of assuming a missing phase should crash parsing.
+    """
+    for zone_event in ordered_zone_events:
+        if timestamp <= zone_event["shrinkEndTime"]:
+            return zone_event["currentPhase"]
+
+    return ordered_zone_events[-1]["currentPhase"]
 
 
 def parse_match_metadata(raw: RawMatchData):
@@ -91,13 +61,28 @@ def parse_match_metadata(raw: RawMatchData):
         "match_id": raw.match_id,
         "event_id": match_info["eventId"],
         "event_window_id": match_info["eventWindowId"],
-        "start_time": datetime.fromtimestamp(match_info["aircraftStartTime"] / 1e6),
-        "end_time": datetime.fromtimestamp(match_info["endTimestamp"] / 1e6) if match_info.get("endTimestamp") else None,
-        "gamemode": match_info["gameMode"],
-        "duration": datetime.fromtimestamp(match_info["lengthMs"]),
-        "player_count": match_info["playerCount"],
-        "bus_launch_time": match_info["aircraftStartTime"],
         "map_path": match_info["mapPath"],
+        "start_time": datetime.fromtimestamp(match_info["aircraftStartTime"] / 1e6),
+        "end_time": (
+            datetime.fromtimestamp(match_info["endTimestamp"] / 1e6)
+            if match_info.get("endTimestamp")
+            else None
+        ),
+        "gamemode": match_info["gameMode"],
+        "duration": timedelta(milliseconds=match_info["lengthMs"]),
+        "player_count": match_info["playerCount"],
+    }
+
+
+def _is_match_player(player: dict) -> bool:
+    return not player["isSpectator"] and not player["isBot"]
+
+
+def _eligible_player_ids(raw: RawMatchData) -> set[str]:
+    return {
+        player["epicId"]
+        for player in raw.players
+        if _is_match_player(player)
     }
 
 
@@ -106,7 +91,7 @@ def parse_match_players(raw: RawMatchData) -> list[dict]:
     
     players = []
     for p in match_players:
-        if  p["isSpectator"] or p["isBot"]:
+        if not _is_match_player(p):
             continue
 
         players.append({
@@ -117,6 +102,7 @@ def parse_match_players(raw: RawMatchData) -> list[dict]:
     print(f"Parsed {len(players)} players from {len(match_players)} total")
     return players
 
+
 def parse_elims(raw: RawMatchData):
     print(f"Parsing eliminations for match {raw.match_id}...")
     """
@@ -126,16 +112,23 @@ def parse_elims(raw: RawMatchData):
     """
     match_info = raw.info
     elim_events = raw.elimination_events
-    zone_events = raw.zone_update_events
+    ordered_zone_events = _sorted_zone_events(raw.zone_update_events)
     movement_events = raw.movement_events
 
     match_start = match_info["aircraftStartTime"]
-    zone_timeline = build_zone_timeline(zone_events)
+    eligible_player_ids = _eligible_player_ids(raw)
 
     elim_events.sort(key=lambda e: e["timestamp"])
     
-    # Filter out self eliminations before building pos_cache
-    non_self_elims = [e for e in elim_events if not e.get("selfElimination")]
+    # Keep only non-self eliminations between players that will exist in MatchPlayer.
+    non_self_elims = [
+        e for e in elim_events
+        if (
+            not e.get("selfElimination")
+            and e.get("epicId") in eligible_player_ids
+            and e.get("targetId") in eligible_player_ids
+        )
+    ]
     pos_cache = indexed_events(non_self_elims, movement_events)
 
     enriched_elim_events = []
@@ -148,8 +141,7 @@ def parse_elims(raw: RawMatchData):
         ts = ee["timestamp"]
         game_time_seconds = (ts - match_start) / 1e6
 
-        zone = bisect_left(zone_timeline, ts) + 1
-        # problem here
+        zone = _zone_for_timestamp(ordered_zone_events, ts)
         weapon_id = "WID_Assault_FirePetal_Fast_Athena_UC"
         gun_type = ee["gunType"]
 
@@ -207,19 +199,21 @@ def parse_hitscan_elims(raw: RawMatchData) -> list[dict]:
     """
 
     match_info = raw.info
-    zone_events = raw.zone_update_events
+    ordered_zone_events = _sorted_zone_events(raw.zone_update_events)
     movement_events = raw.movement_events
     shot_events = raw.shot_events
 
     match_start = match_info["aircraftStartTime"]
+    eligible_player_ids = _eligible_player_ids(raw)
 
-    zone_timeline = build_zone_timeline(zone_events)
-    # filter shots that hit players
+    # Keep only fatal player-vs-player hits that map to MatchPlayer rows.
     elim_events = [
         e for e in shot_events 
         if (
             e.get("hitPlayer") and
-            e.get("hitFatal")
+            e.get("hitFatal") and
+            e.get("epicId") in eligible_player_ids and
+            e.get("hitEpicId") in eligible_player_ids
         )
     ]
 
@@ -233,7 +227,7 @@ def parse_hitscan_elims(raw: RawMatchData) -> list[dict]:
         ts = he["timestamp"]
         game_time_seconds = (ts - match_start) / 1e6
 
-        zone = bisect_left(zone_timeline, ts) + 1
+        zone = _zone_for_timestamp(ordered_zone_events, ts)
 
         damage = he["damage"]
         weapon_id = he["weaponId"]
@@ -282,15 +276,22 @@ def parse_damage_dealt(raw: RawMatchData):
     """
 
     match_info = raw.info
-    zone_events = raw.zone_update_events
+    ordered_zone_events = _sorted_zone_events(raw.zone_update_events)
     movement_events = raw.movement_events
     shot_events = raw.shot_events
 
     match_start = match_info["aircraftStartTime"]
+    eligible_player_ids = _eligible_player_ids(raw)
 
-    zone_timeline = build_zone_timeline(zone_events)
-    # filter shots that hit players
-    hit_events = [e for e in shot_events if e.get("hitPlayer")]
+    # Keep only player-vs-player hits that map to MatchPlayer rows.
+    hit_events = [
+        e for e in shot_events
+        if (
+            e.get("hitPlayer")
+            and e.get("epicId") in eligible_player_ids
+            and e.get("hitEpicId") in eligible_player_ids
+        )
+    ]
 
     hit_events.sort(key=lambda e: e["timestamp"])
     pos_cache = indexed_events(hit_events, movement_events)
@@ -302,7 +303,7 @@ def parse_damage_dealt(raw: RawMatchData):
         ts = he["timestamp"]
         game_time_seconds = (ts - match_start) / 1e6
 
-        zone = bisect_left(zone_timeline, ts) + 1
+        zone = _zone_for_timestamp(ordered_zone_events, ts)
 
         damage = he["damage"]
         weapon_id = he["weaponId"]
