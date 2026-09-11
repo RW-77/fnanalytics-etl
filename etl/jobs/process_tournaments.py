@@ -1,33 +1,43 @@
+import argparse
+import traceback
 from datetime import datetime, timezone
+
 from sqlalchemy import select
+
 import etl.db.loader as db_loader
 import etl.storage.loader as s3_loader
-import etl.db.schema as schema
 
-from etl.fetching.match_data_fetching import ensure_match_raw, ensure_event_window_raw
-from etl.parsing.match_parsing import parse_match_relational, parse_match_timeline
-from etl.parsing.event_parsing import parse_event_window_metadata, parse_event_window_matches
-from etl.parsing.basic import parse_match_metadata
-from etl.parsing.tournament_classification import (
-    classify_event_window_id,
-    parse_event_window_attributes,
+from etl.fetching.match_data_fetching import (
+    ensure_match_raw,
+    ensure_event_window_raw,
+    ensure_event_window_leaderboard_raw,
 )
-from etl.parsing.tournament_metadata import resolve_tournament_metadata
+from etl.parsing.event_parsing import (
+    parse_event_metadata,
+    parse_event_window_matches,
+    parse_event_window_metadata,
+    parse_tournament_metadata,
+)
+from etl.parsing.leaderboard import build_leaderboard_rows, build_leaderboard_player_rows
+from etl.parsing.tournament_classification import get_region_code
+
+from etl.orch.runner import process_match_relational, process_match_timeline
+from etl.orch.registry import STATS, TIMELINE_NAME, TIMELINE_VERSION, desired_versions
 
 from etl.db.session import get_session
-from etl.db.models import (
-    EventWindow,
-    Match,
-)
+from etl.db.models import EventWindow, Match
 from etl.db.status import (
-    STATUS_PROCESSED,
     mark_event_window_failed,
     mark_event_window_started,
     mark_event_window_succeeded,
     mark_match_failed,
     mark_match_started,
     mark_match_succeeded,
+    read_stat_status,
+    mark_stat_processed,
+    mark_stat_failed,
 )
+from etl.types import RawEventWindowData
 
 
 def get_existing_event_window_ids() -> list[str]:
@@ -40,115 +50,241 @@ def get_existing_event_window_ids() -> list[str]:
 
 
 def process_match(match_id: str, event_window_id: str, force: bool = False) -> bool:
-    existing_processed_event_window_id = None
+    """Reconcile one match: materialize only the assets whose version is stale.
 
-    if not force:
-        with get_session() as session:
-            match = session.get(Match, match_id)
-            if match and match.status == STATUS_PROCESSED:
-                if match.event_window_id == event_window_id:
-                    print(f"⏭️  Match {match_id} already processed, skipping...")
-                    return True
+    Compares each asset's current version (:func:`desired_versions`) against
+    what ``match_stat_status`` records for this match and (re)materializes only
+    the difference. ``force=True`` treats every asset as stale. A fully-current
+    match is a cheap no-op — one indexed status read, no raw fetch.
+    """
+    desired = desired_versions()
+    with get_session() as session:
+        actual = read_stat_status(match_id, session)
 
-                existing_processed_event_window_id = match.event_window_id
-                print(
-                    f"⚠️  Match {match_id} is processed under "
-                    f"{existing_processed_event_window_id}; reconciling with raw metadata."
-                )
-
-    try:
-        started_at = datetime.now(timezone.utc)
-
-        # with get_session() as session, session.begin():
-            # pass
-
-        print(f"\n{'='*60}")
-        print(f"Processing match: {match_id}")
-        print(f"{'='*60}\n")
-        
-        print(f"Check that all event logs are fetched for match {match_id}...")
-
-        # ensure all raw match data is fetched into and loaded from S3
-        raw = ensure_match_raw(match_id)
-        match_metadata = parse_match_metadata(raw)
-
-        if match_metadata["event_window_id"] != event_window_id:
-            raise ValueError(
-                f"Match {match_id} belongs to event window "
-                f"{match_metadata['event_window_id']}, not {event_window_id}."
-            )
-
-        if existing_processed_event_window_id is not None:
-            with get_session() as session, session.begin():
-                db_loader.load_match_metadata(match_metadata, session)
-
-            print(
-                f"\n✅ Reconciled match {match_id} from "
-                f"{existing_processed_event_window_id} to {event_window_id}\n"
-            )
-            return True
-
-        # this is only one parsing type of the pipeline now
-        parsed_relational = parse_match_relational(raw)
-        parsed_timeline = parse_match_timeline(raw)
-
-        with get_session() as session, session.begin():
-            match = db_loader.load_match_relational(parsed_relational, event_window_id, session)
-            mark_match_started(match, started_at)
-            s3_loader.load_match_timeline(parsed_timeline, event_window_id, session)
-            mark_match_succeeded(match, datetime.now(timezone.utc))
-
-        print(f"\n✅ Successfully processed match {match_id}\n")
+    stale = {
+        name
+        for name, version in desired.items()
+        if force or actual.get(name) is None or actual and actual[name] < version
+    }
+    if not stale:
+        print(f"⏭️  Match {match_id} already current, skipping")
         return True
 
+    print(f"\n{'='*60}\nReconciling match {match_id}: {sorted(stale)}\n{'='*60}\n")
+
+    try:
+        raw = ensure_match_raw(match_id)
     except Exception as e:
-        print(f"\n❌ Error processing match {match_id}: {e}")
-
-        import traceback
+        print(f"❌ Failed to fetch raw for match {match_id}: {e}")
         traceback.print_exc()
-
-        with get_session() as session, session.begin():
-            match = session.get(Match, match_id)
-            if match is not None:
-                mark_match_failed(match, datetime.now(timezone.utc))
-
         return False
 
+    relational_stale = stale & set(STATS)
+    ok = True
 
-def process_event_window(event_window_id: str, force: bool = False):
+    # Phase A — relational stats, one transaction (atomic batch).
+    if relational_stale:
+        try:
+            now = datetime.now(timezone.utc)
+            with get_session() as session, session.begin():
+                match = process_match_relational(
+                    raw, event_window_id, session, relational_stale
+                )
+                mark_match_started(match, now)
+                for name in relational_stale:
+                    mark_stat_processed(match_id, name, STATS[name].version, session, now)
+        except Exception as e:
+            ok = False
+            print(f"❌ Relational load failed for match {match_id}: {e}")
+            traceback.print_exc()
+            _record_stat_failures(match_id, relational_stale)
+
+    # Phase B — timeline asset, NO db transaction open (slow S3 upload).
+    if TIMELINE_NAME in stale:
+        try:
+            process_match_timeline(raw, event_window_id)
+            with get_session() as session, session.begin():
+                mark_stat_processed(
+                    match_id,
+                    TIMELINE_NAME,
+                    TIMELINE_VERSION,
+                    session,
+                    datetime.now(timezone.utc),
+                )
+        except Exception as e:
+            ok = False
+            print(f"❌ Timeline upload failed for match {match_id}: {e}")
+            traceback.print_exc()
+            try:
+                deleted = s3_loader.cleanup_match_timeline(match_id)
+                if deleted:
+                    print(f"Cleaned up {deleted} orphaned movement chunks for {match_id}")
+            except Exception as cleanup_err:
+                print(f"⚠️  Failed to clean up movement chunks for {match_id}: {cleanup_err}")
+            _record_stat_failures(match_id, {TIMELINE_NAME})
+
+    # Roll up the coarse Match.status for reporting / the website.
+    with get_session() as session, session.begin():
+        match = session.get(Match, match_id)
+        if match is not None:
+            mark = mark_match_succeeded if ok else mark_match_failed
+            mark(match, datetime.now(timezone.utc))
+
+    if ok:
+        print(f"\n✅ Reconciled match {match_id}: {sorted(stale)}\n")
+    return ok
+
+
+def _record_stat_failures(match_id: str, names) -> None:
+    """Best-effort per-stat failure marking. No-op if the Match row does not
+    exist yet (a brand-new match whose creation rolled back), since
+    ``match_stat_status`` has a foreign key to ``matches``.
     """
-    Process an entire event window
+    try:
+        now = datetime.now(timezone.utc)
+        with get_session() as session, session.begin():
+            if session.get(Match, match_id) is None:
+                return
+            for name in names:
+                mark_stat_failed(match_id, name, session, now)
+    except Exception as e:
+        print(f"⚠️  Could not record stat failures for {match_id}: {e}")
+
+
+def ingest_event_window_metadata(
+    event_window_id: str,
+    raw: RawEventWindowData | None = None,
+    refresh: bool = False,
+) -> None:
+    """Upsert Event, Tournament, and EventWindow rows for *event_window_id*.
+
+    Performs no match-level work and does not touch processing-status
+    columns. Use this when you want to refresh the derived classification
+    fields (region, season, tournament link, title, day_index) across
+    many event windows without re-ingesting their matches.
+
+    ``raw`` is accepted as an optimization: callers that already have the
+    raw payload in hand can skip the second S3 round trip by passing it.
+    ``refresh`` only applies when ``raw`` is not supplied — see
+    :func:`ensure_event_window_raw`.
+    """
+    print(f"Ingesting metadata for event window: {event_window_id}")
+
+    if raw is None:
+        raw = ensure_event_window_raw(event_window_id, refresh=refresh)
+
+    parsed_event = parse_event_metadata(raw)
+    parsed_tournament = parse_tournament_metadata(raw)
+    parsed_event_window = parse_event_window_metadata(raw, parsed_tournament)
+
+    # Parents before children so future FKs (events ← event_windows,
+    # tournaments ← event_windows) are satisfied at flush time.
+    with get_session() as session, session.begin():
+        db_loader.load_event(parsed_event, session)
+        if parsed_tournament is not None:
+            db_loader.load_tournament(parsed_tournament, session)
+        db_loader.load_event_window_metadata(parsed_event_window, session)
+
+    print(f"✅ Metadata ingested for {event_window_id}")
+
+
+def ingest_event_window_leaderboard(
+    event_window_id: str,
+    refresh: bool = False,
+) -> None:
+    """Fetch, build, and load the tournament leaderboard for *event_window_id*.
+
+    Mirrors :func:`ingest_event_window_metadata`: a self-contained window-level
+    ingest. Player flags (``event_window_players``) load from the leaderboard
+    entries unconditionally; team standings (``event_window_teams`` /
+    ``event_window_team_matches``) additionally need scoring rules and are
+    skipped — without failing — for windows aged out of fnapi's listing.
+    Independent of match processing — the per-game stats come pre-aggregated
+    from the leaderboard endpoint.
+    """
+    print(f"Ingesting leaderboard for event window: {event_window_id}")
+
+    region = get_region_code(event_window_id)
+    raw = ensure_event_window_leaderboard_raw(event_window_id, region, refresh=refresh)
+
+    # Player flags come from the leaderboard entries, which are cached even for
+    # windows whose scoring rules have aged out — so load them unconditionally.
+    player_rows = build_leaderboard_player_rows(raw.entries, event_window_id)
+    with get_session() as session, session.begin():
+        db_loader.load_event_window_players(player_rows, event_window_id, session)
+
+    # Team standings need scoring rules; skip them (without failing) when the
+    # window has aged out of fnapi's listing and has no scoring.json.
+    if raw.scoring_rules is None:
+        print(
+            f"✅ Player flags ingested for {event_window_id}: {len(player_rows)} "
+            f"players (no scoring rules — team standings skipped)"
+        )
+        return
+
+    team_rows, match_rows = build_leaderboard_rows(
+        raw.entries, raw.scoring_rules, event_window_id, raw.match_point_rule
+    )
+    with get_session() as session, session.begin():
+        db_loader.load_event_window_teams(team_rows, event_window_id, session)
+        db_loader.load_event_window_team_matches(match_rows, event_window_id, session)
+
+    print(
+        f"✅ Leaderboard ingested for {event_window_id}: "
+        f"{len(team_rows)} teams, {len(match_rows)} team-matches, "
+        f"{len(player_rows)} players"
+    )
+
+
+def process_event_window(
+    event_window_id: str,
+    force: bool = False,
+    refresh: bool = False,
+) -> dict:
+    """Full pipeline: metadata ingestion followed by per-match reconciliation.
+
+    There is no coarse "already processed" short-circuit — every match is
+    handed to the reconciler, which cheaply skips the ones whose assets are all
+    current. That is what lets a re-run pick up a newly-added stat or a version
+    bump without touching everything else.
+
+    ``force`` and ``refresh`` are orthogonal: ``force`` re-materializes stats
+    for matches we already know about, ``refresh`` re-pulls the window's match
+    list from the API in case it has grown (a live event).
     """
     print(f"\n{'#'*60}")
     print(f"Processing Event Window: {event_window_id}")
     print(f"{'#'*60}\n")
 
-    # force process check (always comes first)
-    if not force:
-        with get_session() as session:
-            event_window = session.get(EventWindow, event_window_id)
-            if event_window and event_window.status == STATUS_PROCESSED:
-                print(f"Event window {event_window_id} already processed, skipping...")
-                return {"status": "already_processed"}
-
     started_at = datetime.now(timezone.utc)
 
-    # fetch event window raw logs if needed (info.json and matches.json)
-    raw = ensure_event_window_raw(event_window_id)
+    # Fetch raw once; reuse for both metadata ingestion and match iteration.
+    raw = ensure_event_window_raw(event_window_id, refresh=refresh)
 
-    # parse event window data
-    event_window_data = parse_event_window_metadata(raw)
-    matches = parse_event_window_matches(raw)
+    # Phase 1 — metadata. Same code path the backfill uses.
+    ingest_event_window_metadata(event_window_id, raw=raw)
 
-    classification = classify_event_window_id(event_window_id)
-
+    # Phase 2 — mark the EventWindow as processing-started now that the row
+    # is guaranteed to exist.
     with get_session() as session, session.begin():
-        if classification is not None:
-            tournament_metadata = resolve_tournament_metadata(classification)
-            db_loader.ensure_tournament(tournament_metadata, session)
-        event_window = db_loader.load_event_window_metadata(event_window_data, session)
+        event_window = session.get_one(EventWindow, event_window_id)
         mark_event_window_started(event_window, started_at)
 
+    # Phase 3 — leaderboard standings, before match processing. Independent of
+    # match parsing (the per-game stats come pre-aggregated from the leaderboard
+    # endpoint), so a failure here — e.g. a window fnapi doesn't list — is logged
+    # but does not fail the window's match processing.
+    try:
+        ingest_event_window_leaderboard(event_window_id, refresh=refresh)
+    except LookupError as leaderboard_error:
+        # Event older than fnapi's rolling listing — no leaderboard to ingest.
+        print(f"⏭️  No fnapi leaderboard for {event_window_id}: {leaderboard_error}")
+    except Exception as leaderboard_error:
+        print(f"⚠️  Leaderboard ingest failed for {event_window_id}: {leaderboard_error}")
+        traceback.print_exc()
+
+    # Phase 4 — matches.
+    matches = parse_event_window_matches(raw)
     results = {"total": len(matches), "successful": 0, "failed": 0}
 
     try:
@@ -179,7 +315,29 @@ def process_event_window(event_window_id: str, force: bool = False):
 
 
 if __name__ == "__main__":
-    event_window_ids = [
+    # Reconcile a set of event windows. With the reconciler, --force off only
+    # (re)materializes stale/new assets; every already-current match is skipped.
+    parser = argparse.ArgumentParser(
+        description="Reconcile a hardcoded set of event windows into the database."
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help=(
+            "Re-fetch each window's info/matches from Osirion, ignoring (and "
+            "overwriting) the S3 cache. Use during a live event, whose match "
+            "list is still growing."
+        ),
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-materialize every stat for every match, even if already current.",
+    )
+    args = parser.parse_args()
+
+    """
+    event_window_ids: list[str] = [
         "S33_FNCSMajor1_Final_Day1_EU",
         "S33_FNCSMajor1_Final_Day2_EU",
         "S33_FNCSMajor1_Final_Day1_NAC",
@@ -194,29 +352,78 @@ if __name__ == "__main__":
         "S36_FNCSMajor3_Final_Day2_NAC",
         "Dinosauron_Day1",
         "Dinosauron_Day2",
+        "S39_FNCSDivisionalCup_Division1_Week6Final_EU",
+        "S39_FNCSDivisionalCup_Division1_Week6Final_NAC",
         "S40_FNCSMajor1_Final_Day1_EU",
         "S40_FNCSMajor1_Final_Day2_EU",
         "S40_FNCSMajor1_Final_Day1_NAC",
         "S40_FNCSMajor1_Final_Day2_NAC",
-        "S40_FNCSDivisionalCup_Division1_Week5Final_NAC",
+        "S40_FNCSDivisionalCup_Division1_Week3Final_EU",
+        "S40_FNCSDivisionalCup_Division1_Week3Final_NAC",
+        "S40_FNCSDivisionalCup_Division1_Week4Final_EU",
+        "S40_FNCSDivisionalCup_Division1_Week4Final_NAC",
         "S40_FNCSDivisionalCup_Division1_Week5Final_EU",
+        "S40_FNCSDivisionalCup_Division1_Week5Final_NAC",
+        "S40_FNCSDivisionalCup_Division1_Week2Final_EU",
+        "S40_FNCSDivisionalCup_Division1_Week2Final_NAC",
+        "Bratwurst_Finals_Day3",
+        "S41_PerformanceEvaluation_Event1Round2_EU",
+        "S41_PerformanceEvaluation_Event1Round2_NAC",
+        "S41_FNCSDivisionalCup_Division1_Week1Final_EU",
+        "S41_FNCSDivisionalCup_Division1_Week1Final_NAC",
+        "S41_PerformanceEvaluation_Event2Round2_EU",
+        "S41_PerformanceEvaluation_Event2Round2_NAC",
+        "S41_FNCSDivisionalCup_Division1_Week2Final_EU",
+        "S41_FNCSDivisionalCup_Division1_Week2Final_NAC",
+        "S41_FNCSDivisionalCup_Division1_Week3Final_EU",
+        "S41_FNCSDivisionalCup_Division1_Week3Final_NAC",
+        "S41_PerformanceEvaluation_Event4Round2_NAC",
+        "S41_PerformanceEvaluation_Event4Round2_EU",
+        "S41_FNCSDivisionalCup_Division1_Week4Final_NAC",
+        "S41_FNCSDivisionalCup_Division1_Week4Final_EU",
+        "S41_PerformanceEvaluation_Event5Round2_EU",
+        "S41_PerformanceEvaluation_Event5Round2_NAC",
+        "S41_PerformanceEvaluation_Event6Round2_EU",
+        "S41_PerformanceEvaluation_Event6Round2_NAC",
+        "S41_FNCSMajor2_Final_Day1_EU",
+        "S41_FNCSMajor2_Final_Day1_NAC",
+        "S41_FNCSMajor2_Final_Day2_EU",
+        "S41_FNCSMajor2_Final_Day2_NAC",
+        "S41_PerformanceEvaluation_Event9Round2_EU"
+        "S41_PerformanceEvaluation_Event9Round2_NAC",
+        "S41_FNCSLastChanceMajor_Final_EU"
+        "S41_FNCSLastChanceMajor_Final_NAC"
+        "S39_ReloadEliteSeries1Final_NAC",
+        "S39_ReloadEliteSeries2Final_NAC",
+        "S40_ReloadEliteSeries3Final_NAC",
+        "S41_ReloadEliteSeries4Final_NAC",
+        "S39_ReloadEliteSeries1Final_EU",
+        "S39_ReloadEliteSeries2Final_EU",
+        "S40_ReloadEliteSeries3Final_EU",
+        "S41_ReloadEliteSeries4Final_EU",
+        "Escargo_Day4", # EWC Final,
+        "S42_PerformanceEvaluation_Event1Round2_NAC",
+        "S42_PerformanceEvaluation_Event1Round2_EU",
+        "S42_FNCSDivisionalCup_Division1_Week1Final_EU",
+        "S42_FNCSDivisionalCup_Division1_Week1Final_NAC",
+        "S42_PerformanceEvaluation_Event2Round2_EU",
+        "S42_PerformanceEvaluation_Event2Round2_NAC",
+        "S42_FNCSDivisionalCup_Division1_Week2Final_EU",
+        "S42_FNCSDivisionalCup_Division1_Week2Final_NAC",
+        "S42_PerformanceEvaluation_Event3Round2_EU",
+        "S42_PerformanceEvaluation_Event3Round2_NAC",
     ]
     """
-    event_window_ids = [
+
+    event_window_ids: list[str] = [
     ]
-    """
-    # event_window_ids = get_existing_event_window_ids()
-
-    # if not event_window_ids:
-        # print("No event windows found in the database; nothing to reprocess.")
-        # raise SystemExit(0)
-
-    # schema.reinit_db()
-
+    
     statuses: dict[str, dict] = {}
     for event_window_id in event_window_ids:
-        statuses[event_window_id] = process_event_window(event_window_id, force=True)
+        statuses[event_window_id] = process_event_window(
+            event_window_id, force=args.force, refresh=args.refresh
+        )
 
-    print("\nReprocessing summary:")
+    print("\nReconcile summary:")
     for event_window_id, status in statuses.items():
         print(f"- {event_window_id}: {status}")
