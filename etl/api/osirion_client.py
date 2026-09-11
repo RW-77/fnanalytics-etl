@@ -1,6 +1,5 @@
 """
-Pure HTTP client for raw data from the Osirion API and 
-OsirionFNAPI
+Pure HTTP client for raw data from the Osirion API and OsirionFNAPI
 """
 
 import os
@@ -33,6 +32,7 @@ REQUIRED_MATCH_EVENT_LOGS = [
     "landingEvents",
     "healthUpdateEvents",
     "shieldUpdateEvents",
+    "fireWeaponEvents",
 ]
 
 
@@ -59,7 +59,7 @@ def _make_request(
         ValueError: If API_KEY is not set
     """
     # Transient error status codes that should be retried
-    retryable_status_codes = {502, 503, 504}  # Bad Gateway, Service Unavailable, Gateway Timeout
+    retryable_status_codes = {502, 503, 504, 429}  # Bad Gateway, Service Unavailable, Gateway Timeout
     
     for attempt in range(max_retries):
         try:
@@ -77,7 +77,8 @@ def _make_request(
             
             # Check if it's a retryable error
             if res.status_code in retryable_status_codes and attempt < max_retries - 1:
-                wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                retry_after = res.headers.get("Retry-After")
+                wait_time = float(retry_after) if retry_after else retry_delay * (2 ** attempt)  # Exponential backoff
                 error_msg = res.text[:200] if res.text else "No error message"
                 print(f"⚠️  Transient error {res.status_code} (attempt {attempt + 1}/{max_retries}): {error_msg}")
                 print(f"   Retrying in {wait_time:.1f} seconds...")
@@ -285,29 +286,88 @@ def fetch_match_events(
     }
 
 
+def _time_window_params(start_time: int | None, end_time: int | None) -> dict[str, int]:
+    """Build relative time-window params, omitting bounds that are unset.
+
+    The movement endpoint returns the full match when no bounds are given, but
+    the shots endpoint requires both bounds and returns HTTP 400
+    ("StartTime and EndTime are required") if either is missing. Callers that
+    hit the shots endpoint must pass an explicit window (see
+    ``etl.fetching.match_data_fetching``).
+    """
+    params: dict[str, int] = {}
+    if start_time is not None:
+        params["startTimeRelative"] = start_time
+    if end_time is not None:
+        params["endTimeRelative"] = end_time
+    return params
+
+
 def fetch_match_movement_events(
     match_id: str,
     *,
-    start_time: int = 0,
-    end_time: int = 1650,
+    start_time: int | None = None,
+    end_time: int | None = None,
 ) -> JsonList:
     url = f"{BASE_URL}/matches/{match_id}/events/movement"
-    params = {"startTimeRelative": start_time, "endTimeRelative": end_time}
-    data = _make_request(url, params)
+    data = _make_request(url, _time_window_params(start_time, end_time))
     return _extract_list(data, "events")
+
+
+# The /events/shots endpoint truncates its response under load: it can drop a
+# large, non-deterministic chunk of the match yet still return HTTP 200 with
+# valid JSON. A single full-match request is therefore unreliable. We instead
+# page over the window in small sub-windows — each response stays well under the
+# truncation threshold — then merge. Windows overlap so no event is lost at a
+# boundary regardless of the endpoint's inclusive/exclusive semantics;
+# de-duplication removes the double-covered events. Observed truncation only
+# occurs above ~19k events per response; a 200s window tops out around ~8k.
+SHOT_WINDOW_SECONDS = 200
+SHOT_WINDOW_STEP_SECONDS = 190  # 10s overlap between consecutive windows
+
+
+def _fetch_shots_window(
+    match_id: str,
+    start_time: int | None,
+    end_time: int | None,
+) -> JsonList:
+    url = f"{BASE_URL}/matches/{match_id}/events/shots"
+    data = _make_request(url, _time_window_params(start_time, end_time))
+    return _extract_list(data, "hitscanEvents")
 
 
 def fetch_match_shot_events(
     match_id: str,
     *,
-    start_time: int = 0,
-    end_time: int = 1650,
+    start_time: int | None = None,
+    end_time: int | None = None,
 ) -> JsonList:
+    """Fetch all hitscan (shot) events for a match, in timestamp order.
 
-    url = f"{BASE_URL}/matches/{match_id}/events/shots"
-    params = {"startTimeRelative": start_time, "endTimeRelative": end_time}
-    data = _make_request(url, params)
-    return _extract_list(data, "hitscanEvents")
+    ``start_time`` / ``end_time`` are relative seconds (``startTimeRelative`` /
+    ``endTimeRelative``). When both are given we page over the range in
+    overlapping sub-windows and merge, to defeat the endpoint's silent
+    truncation of large responses. With no window we fall back to a single
+    request (the endpoint requires both bounds, so this only covers unusual
+    callers).
+    """
+    if start_time is None or end_time is None:
+        return _fetch_shots_window(match_id, start_time, end_time)
+
+    merged: dict[str, JsonDict] = {}
+    window_start = start_time
+    while window_start < end_time:
+        window_end = min(window_start + SHOT_WINDOW_SECONDS, end_time)
+        for event in _fetch_shots_window(match_id, window_start, window_end):
+            # Key on full content so genuinely distinct events (e.g. multiple
+            # pellets sharing a timestamp) survive while boundary overlaps
+            # collapse.
+            merged[json.dumps(event, sort_keys=True)] = event
+        if window_end >= end_time:
+            break
+        window_start += SHOT_WINDOW_STEP_SECONDS
+
+    return sorted(merged.values(), key=lambda e: e["timestamp"])
 
 
 def fetch_match_weapons(match_id: str) -> JsonList:
@@ -337,5 +397,7 @@ def fetch_event_matches(event_id: str) -> JsonList:
 
 
 if __name__ == "__main__":
-    event_window_id = "S36_PerformanceEvaluation_Event6Round2_EU"
-    print(json.dumps(fetch_tournaments_by_event_window_id(event_window_id), indent=2))
+    # event_window_id = "S36_PerformanceEvaluation_Event6Round2_EU"
+    # print(json.dumps(fetch_tournaments_by_event_window_id(event_window_id), indent=2))
+    match_id = "2f9cd76dd24473df2f04b09c06db0c76"
+    print(json.dumps(session_to_match_id(match_id), indent=2))
