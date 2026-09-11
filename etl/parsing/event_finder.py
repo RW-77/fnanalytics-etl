@@ -5,7 +5,7 @@ import pandas as pd
 from collections import defaultdict
 from bisect import bisect_left, bisect_right
 
-from pipeline.api import osirion_client as osr
+from etl.api import osirion_client as osr
 from geometry.vec3 import Vec3, normalize, dot
 from geometry.ray import Ray
 from geometry.sphere import Sphere

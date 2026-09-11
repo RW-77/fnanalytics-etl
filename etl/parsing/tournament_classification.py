@@ -71,6 +71,22 @@ SUPPORTED_TOURNAMENT_RULES = (
         ),
     ),
     _TournamentRule(
+        name="fncs_last_chance_major_finals",
+        pattern=re.compile(
+            rf"^(?P<tournament_id>(?P<season_code>S\d+)_FNCSLastChanceMajor_Final)"
+            rf"_(?P<region_code>{REGION_ALTERNATION})$",
+            re.IGNORECASE,
+        ),
+    ),
+    _TournamentRule(
+        name="reload_elite_series_finals",
+        pattern=re.compile(
+            rf"^(?P<tournament_id>(?P<season_code>S\d+)_ReloadEliteSeries\d+Final)"
+            rf"_(?P<region_code>{REGION_ALTERNATION})$",
+            re.IGNORECASE,
+        ),
+    ),
+    _TournamentRule(
         name="fncs_divisional_cup_finals",
         pattern=re.compile(
             rf"^(?P<tournament_id>(?P<season_code>S\d+)_FNCSDivisionalCup_"
@@ -91,6 +107,13 @@ SUPPORTED_TOURNAMENT_RULES = (
         pattern=re.compile(
             rf"^(?P<tournament_id>{GLOBAL_CHAMPIONSHIP_ALTERNATION})"
             rf"_Day(?P<day_index>\d+)$",
+            re.IGNORECASE,
+        ),
+    ),
+    _TournamentRule(
+        name="codename_event",
+        pattern=re.compile(
+            rf"^(?P<tournament_id>.+?)(?:_Day(?P<day_index>\d+))?(?:_(?P<region_code>{REGION_ALTERNATION}))?$",
             re.IGNORECASE,
         ),
     ),

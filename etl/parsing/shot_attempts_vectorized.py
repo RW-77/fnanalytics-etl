@@ -9,7 +9,7 @@ from collections import defaultdict
 from bisect import bisect_left, bisect_right
 import matplotlib.pyplot as plt
 
-from pipeline.api import osirion_client as osr
+from etl.api import osirion_client as osr
 from geometry.vec3 import Vec3, normalize, dot
 from geometry.ray import Ray
 from geometry.sphere import Sphere
@@ -158,21 +158,6 @@ def get_hit_attempt_events(shot_events_path: str, movement_events_path: str):
     print(len(hit_attempts))
     print(f"number of hits: {counter}")
     return hit_attempts
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
