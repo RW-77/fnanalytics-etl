@@ -27,7 +27,7 @@ from etl.db.models import (
     Event,
     Weapon,
 )
-from etl.parsing.tournament_metadata import TournamentMetadata, EventMetadata
+from etl.parsing.tournament.metadata import TournamentMetadata, EventMetadata
 from etl.db.context import LoadContext
 
 
@@ -101,7 +101,7 @@ def load_event_window_players(
 ) -> int:
     """Bulk insert a window's leaderboard players.
 
-    ``player_rows`` come from :func:`etl.parsing.leaderboard.
+    ``player_rows`` come from :func:`etl.parsing.tournament.leaderboard.
     build_leaderboard_player_rows`; each dict already carries the exact
     ``event_window_players`` columns (``event_window_id``, ``epic_id``,
     ``epic_username``, ``flag_token``). Owns its rows: clears this window's
@@ -128,7 +128,7 @@ def load_event_window_teams(
 ) -> int:
     """Bulk insert a window's team standings.
 
-    ``team_rows`` come from :func:`etl.parsing.leaderboard.build_leaderboard_rows`;
+    ``team_rows`` come from :func:`etl.parsing.tournament.leaderboard.build_leaderboard_rows`;
     each dict already carries the exact ``event_window_teams`` columns. Owns its
     rows: clears this window's existing rows before (re)inserting.
     """
@@ -153,7 +153,7 @@ def load_event_window_team_matches(
 ) -> int:
     """Bulk insert a window's per-game team results.
 
-    ``match_rows`` come from :func:`etl.parsing.leaderboard.build_leaderboard_rows`;
+    ``match_rows`` come from :func:`etl.parsing.tournament.leaderboard.build_leaderboard_rows`;
     each dict already carries the exact ``event_window_team_matches`` columns
     (including ``match_point_bonus``). Owns its rows: clears this window's
     existing rows before (re)inserting.

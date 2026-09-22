@@ -2,9 +2,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from functools import cached_property
 
-from etl.parsing.indexing import PlayerPositionIndex
-from etl.parsing.shot_attempts import parse_shot_attempts
-from etl.parsing.basic import parse_shots, parse_elims, parse_knocks, parse_damage_dealt
+from etl.parsing.common.indexing import PlayerPositionIndex
+from etl.parsing.match.relational.shot_attempts import parse_shot_attempts
+from etl.parsing.match.relational.combat import parse_shots, parse_elims, parse_knocks, parse_damage_dealt
 from etl.types import RawMatchData
 
 @dataclass

@@ -15,20 +15,20 @@ from etl.db.loader import (
     load_builds_placed,
     load_alive_intervals,
 )
-from etl.parsing.basic import (
+from etl.parsing.match.relational.combat import (
     parse_elims,
     parse_damage_dealt,
     parse_shots,
 )
-from etl.parsing.damage_contribution import (
+from etl.parsing.match.relational.damage_contribution import (
     parse_damage_contribution_on_elims,
     parse_assists,
 )
-from etl.parsing.shot_attempts import parse_shot_attempts
-from etl.parsing.reboots import parse_reboots
-from etl.parsing.revives import parse_revives
-from etl.parsing.builds import parse_builds_placed
-from etl.parsing.time_alive import parse_time_alive
+from etl.parsing.match.relational.shot_attempts import parse_shot_attempts
+from etl.parsing.match.relational.support import parse_reboots
+from etl.parsing.match.relational.support import parse_revives
+from etl.parsing.match.relational.builds import parse_builds_placed
+from etl.parsing.match.relational.time_alive import parse_time_alive
 
 
 @dataclass(frozen=True)

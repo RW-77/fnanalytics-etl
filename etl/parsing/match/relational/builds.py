@@ -1,5 +1,5 @@
 from etl.types import RawMatchData
-from etl.parsing.basic import _eligible_player_ids
+from etl.parsing.common.eligibility import eligible_player_ids
 
 
 def parse_builds_placed(raw: RawMatchData) -> list[dict]:
@@ -12,7 +12,7 @@ def parse_builds_placed(raw: RawMatchData) -> list[dict]:
     ``COUNT(*) GROUP BY builder``.
     """
     match_start = raw.info["aircraftStartTime"]
-    eligible = _eligible_player_ids(raw)
+    eligible = eligible_player_ids(raw)
 
     rows: list[dict] = []
     for e in raw.build_events:

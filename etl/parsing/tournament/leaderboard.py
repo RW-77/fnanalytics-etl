@@ -7,7 +7,7 @@ rows for two tables:
 * ``event_window_teams`` — one summary row per team: the API's authoritative
   final rank/points/score for the window, plus matches/wins/kills.
 * ``event_window_team_matches`` — one row per (team, game) with the raw per-game
-  stats and the points computed by :mod:`etl.parsing.scoring`.
+  stats and the points computed by :mod:`etl.parsing.tournament.scoring`.
 
 Each team's ``sessionHistory`` is ordered by ``endTime`` to assign a 1-based
 ``game_number`` — the per-window match index the leaderboard's match buttons map
@@ -19,7 +19,7 @@ aggregation of the match rows across the tournament's windows, ordered by
 from datetime import datetime
 
 from etl.types import JsonDict, JsonList
-from etl.parsing.scoring import (
+from etl.parsing.tournament.scoring import (
     PLACEMENT_STAT,
     TEAM_ELIMS_STAT,
     game_points_breakdown,

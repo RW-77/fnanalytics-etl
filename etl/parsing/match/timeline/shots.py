@@ -1,5 +1,5 @@
 from etl.types import RawMatchData
-from etl.parsing.indexing import PlayerPositionIndex
+from etl.parsing.common.indexing import PlayerPositionIndex
 
 # Max staleness (microseconds) for a trusted shooter position — matches
 # shot_attempts.MAX_GAP_US. A shot whose shooter has no movement sample within
@@ -27,7 +27,7 @@ def parse_match_shots(
 
     Sourced from ``fire_weapon_events`` (the complete bulk feed) rather than
     ``shot_events`` (truncates under load), exactly as
-    :func:`etl.parsing.shot_attempts.parse_shot_attempts`.
+    :func:`etl.parsing.match.relational.shot_attempts.parse_shot_attempts`.
     """
     weapon_type = {
         w["weaponId"]: w.get("weaponType")

@@ -1,5 +1,5 @@
 from etl.types import RawMatchData
-from etl.parsing.basic import _eligible_player_ids
+from etl.parsing.common.eligibility import eligible_player_ids
 
 
 def parse_time_alive(raw: RawMatchData) -> list[dict]:
@@ -24,7 +24,7 @@ def parse_time_alive(raw: RawMatchData) -> list[dict]:
         end_ts = match_start + info["lengthMs"] * 1000
     match_end_seconds = (end_ts - match_start) / 1e6
 
-    eligible = _eligible_player_ids(raw)
+    eligible = eligible_player_ids(raw)
 
     # Per player: state-change times. deaths -> dead, reboots -> alive.
     deaths: dict[str, list[float]] = {p: [] for p in eligible}

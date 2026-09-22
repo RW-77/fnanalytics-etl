@@ -6,9 +6,9 @@ from etl.types import RawMatchData
 from etl.db.context import LoadContext
 from etl.db.models import Match
 from etl.db.loader import load_match_metadata, load_match_players
-from etl.parsing.basic import parse_match_metadata, parse_match_players
+from etl.parsing.match.relational.players import parse_match_metadata, parse_match_players
 from etl.orch.registry import STATS
-from etl.parsing.match_parsing import parse_match_timeline
+from etl.parsing.match.timeline.builder import parse_match_timeline
 from etl.storage.loader import load_match_timeline
 
 

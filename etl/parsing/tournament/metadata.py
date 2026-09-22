@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
-from etl.parsing.tournament_classification import TournamentClassification
+from etl.parsing.tournament.classification import TournamentClassification
 
 
 # ---------------------------------------------------------------------------

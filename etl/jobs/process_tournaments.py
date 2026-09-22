@@ -12,14 +12,14 @@ from etl.fetching.match_data_fetching import (
     ensure_event_window_raw,
     ensure_event_window_leaderboard_raw,
 )
-from etl.parsing.event_parsing import (
+from etl.parsing.tournament.windows import (
     parse_event_metadata,
     parse_event_window_matches,
     parse_event_window_metadata,
     parse_tournament_metadata,
 )
-from etl.parsing.leaderboard import build_leaderboard_rows, build_leaderboard_player_rows
-from etl.parsing.tournament_classification import get_region_code
+from etl.parsing.tournament.leaderboard import build_leaderboard_rows, build_leaderboard_player_rows
+from etl.parsing.tournament.classification import get_region_code
 
 from etl.orch.runner import process_match_relational, process_match_timeline
 from etl.orch.registry import STATS, TIMELINE_NAME, TIMELINE_VERSION, desired_versions

@@ -3,8 +3,8 @@ from datetime import datetime
 
 from etl.api.osirion_client import fetch_event_window_matches
 from etl.types import RawEventWindowData
-from etl.parsing.tournament_classification import classify_event_window_id
-from etl.parsing.tournament_metadata import (
+from etl.parsing.tournament.classification import classify_event_window_id
+from etl.parsing.tournament.metadata import (
     EventMetadata,
     TournamentMetadata,
     resolve_tournament_metadata,

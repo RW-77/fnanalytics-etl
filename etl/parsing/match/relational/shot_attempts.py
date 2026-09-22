@@ -1,15 +1,12 @@
 import math
 
 from etl.types import RawMatchData
-from etl.parsing.indexing import PlayerPositionIndex
+from etl.parsing.common.indexing import PlayerPositionIndex
+from etl.parsing.common.eligibility import eligible_player_ids
 
 
 MAX_GAP_US = 600_000      # 600 ms — max staleness for a trusted position
 MAX_RANGE_CM = 25_000.0   # 250 m — max bullet travel we consider
-
-
-def _is_match_player(player: dict) -> bool:
-    return not player["isSpectator"] and not player["isBot"]
 
 
 def _is_ranged_weapon(weapon_id: str) -> bool:
@@ -67,7 +64,7 @@ def parse_shot_attempts(
     """
     index = PlayerPositionIndex(raw)
     team_of = {pid: t["teamId"] for t in raw.teams for pid in t["epicId"]}
-    eligible = {p["epicId"] for p in raw.players if _is_match_player(p)}
+    eligible = eligible_player_ids(raw)
     match_start = raw.info["aircraftStartTime"]
 
     attempts: list[dict] = []

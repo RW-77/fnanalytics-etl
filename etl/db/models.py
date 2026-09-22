@@ -116,7 +116,7 @@ class Match(Base):
     # Match metadata
     event_id: Mapped[str | None] = mapped_column(String(100), default=None)
     map_path: Mapped[String | None] = mapped_column(String, default=None)
-    # fnapi /v1/maps mode id resolved from map_path (see parsing/map_modes.py);
+    # fnapi /v1/maps mode id resolved from map_path (see parsing/tournament/map_modes.py);
     # joins to maps(build_major, build_minor, mode_id) for replay assets.
     mode_id: Mapped[str | None] = mapped_column(String(50), default=None)
     start_time: Mapped[datetime | None] = mapped_column(DateTime, default=None)
@@ -941,7 +941,7 @@ class EventWindowTeamMatch(Base):
 
     One row per (event_window, team, session). Carries the raw per-game tracked
     stats and the points computed from the window's scoring rules (see
-    :mod:`etl.parsing.scoring`). ``game_number`` is the team's 1-based match index
+    :mod:`etl.parsing.tournament.scoring`). ``game_number`` is the team's 1-based match index
     within the window, ordered by ``end_time`` — what the leaderboard's match
     buttons scrub through. ``session_id`` is the match id: a soft reference (no
     FK), since leaderboards exist for matches that are never otherwise ingested.

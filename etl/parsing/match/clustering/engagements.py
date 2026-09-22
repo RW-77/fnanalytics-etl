@@ -4,8 +4,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 
 from etl.types import RawMatchData
-from etl.parsing.context import MatchContext
-from etl.parsing.basic import _sorted_zone_events, _zone_for_timestamp
+from etl.parsing.match.context import MatchContext
+from etl.parsing.common.zones import sorted_zone_events, zone_for_timestamp
 
 
 @dataclass(frozen=True)
@@ -534,10 +534,10 @@ def parse_engagements(
     # zone BEFORE segmentation, so no engagement can grow a late-game blob once
     # the circle is small and every team is within linking distance.
     if params.zone_cutoff is not None:
-        ordered_zones = _sorted_zone_events(ctx.raw.zone_update_events)
+        ordered_zones = sorted_zone_events(ctx.raw.zone_update_events)
         records = [
             r for r in records
-            if _zone_for_timestamp(ordered_zones, r.ts) < params.zone_cutoff
+            if zone_for_timestamp(ordered_zones, r.ts) < params.zone_cutoff
         ]
 
     engagements = segment_engagements(records, ctx.match_id, params=params)

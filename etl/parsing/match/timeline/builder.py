@@ -2,9 +2,9 @@ import numpy as np
 
 from etl.types import RawMatchData, ParsedTimelineData
 from etl.fetching.match_data_fetching import ensure_match_raw
-from etl.parsing.timeline.frames import parse_match_frames, TIMELINE_HZ
-from etl.parsing.timeline.shots import parse_match_shots
-from etl.parsing.basic import parse_match_players
+from etl.parsing.match.timeline.frames import parse_match_frames, TIMELINE_HZ
+from etl.parsing.match.timeline.shots import parse_match_shots
+from etl.parsing.match.relational.players import parse_match_players
 
 TIMELINE_INTERVAL_SECONDS = 10
 

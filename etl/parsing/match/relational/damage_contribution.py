@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 from etl.types import RawMatchData
+from etl.parsing.common.eligibility import eligible_player_ids
 
 
 # Where per-match debug reports are written when debug=True.
@@ -15,18 +16,6 @@ def _safe_filename(username: str, epic_id: str) -> str:
     """Build a filesystem-safe, collision-free per-player report name."""
     base = re.sub(r"[^A-Za-z0-9._-]+", "_", username).strip("_") or "player"
     return f"{base}_{epic_id[:8]}.txt"
-
-
-def _is_match_player(player: dict) -> bool:
-    return not player["isSpectator"] and not player["isBot"]
-
-
-def _eligible_player_ids(raw: RawMatchData) -> set[str]:
-    return {
-        player["epicId"]
-        for player in raw.players
-        if _is_match_player(player)
-    }
 
 
 # Causal ordering for events that share a timestamp. Lower is processed
@@ -147,7 +136,7 @@ def iter_kill_contributions(raw: RawMatchData, *, debug: bool = False) -> Iterat
     the per-match report once the generator is fully consumed (the code after
     the loop runs when iteration ends).
     """
-    eligible = _eligible_player_ids(raw)
+    eligible = eligible_player_ids(raw)
     team_of = {pid: t["teamId"] for t in raw.teams for pid in t["epicId"]}
     name_of = {p["epicId"]: p["epicUsername"] for p in raw.players}
 
