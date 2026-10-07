@@ -74,3 +74,7 @@ class MatchContext:
     @cached_property
     def knocks(self):
         return parse_knocks(self.raw)
+
+    @cached_property
+    def position_index(self) -> PlayerPositionIndex:
+        return PlayerPositionIndex(self.raw)

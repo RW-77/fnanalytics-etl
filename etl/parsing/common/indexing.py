@@ -52,7 +52,7 @@ class PlayerPositionIndex:
             self._toggle_ts[pid] = [t for t, _ in evs]
             self._toggle_alive[pid] = [alive for _, alive in evs]
 
-    def _alive_at(self, epic_id: str, query_ts: int) -> bool:
+    def alive_at(self, epic_id: str, query_ts: int) -> bool:
         """True unless the most recent elimination/reboot toggle before
         ``query_ts`` left the player eliminated."""
         ts = self._toggle_ts.get(epic_id)
@@ -70,7 +70,7 @@ class PlayerPositionIndex:
         max_gap: int,
     ) -> PlayerPosition | None:
         # (1) Alive gate — a dead player has no position to give.
-        if not self._alive_at(epic_id, query_ts):
+        if not self.alive_at(epic_id, query_ts):
             return None
 
         ts = self._ts.get(epic_id)
