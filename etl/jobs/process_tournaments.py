@@ -21,8 +21,19 @@ from etl.parsing.tournament.windows import (
 from etl.parsing.tournament.leaderboard import build_leaderboard_rows, build_leaderboard_player_rows
 from etl.parsing.tournament.classification import get_region_code
 
-from etl.orch.runner import process_match_relational, process_match_timeline
-from etl.orch.registry import STATS, TIMELINE_NAME, TIMELINE_VERSION, desired_versions
+from etl.orch.runner import (
+    process_match_engagements,
+    process_match_relational,
+    process_match_timeline,
+)
+from etl.orch.registry import (
+    ENGAGEMENTS_NAME,
+    ENGAGEMENTS_VERSION,
+    STATS,
+    TIMELINE_NAME,
+    TIMELINE_VERSION,
+    desired_versions,
+)
 
 from etl.db.session import get_session
 from etl.db.models import EventWindow, Match
@@ -122,6 +133,24 @@ def process_match(match_id: str, event_window_id: str, force: bool = False) -> b
             except Exception as cleanup_err:
                 print(f"⚠️  Failed to clean up movement chunks for {match_id}: {cleanup_err}")
             _record_stat_failures(match_id, {TIMELINE_NAME})
+
+    # Phase C — engagements asset, NO db transaction open (S3 upload).
+    if ENGAGEMENTS_NAME in stale:
+        try:
+            process_match_engagements(raw, event_window_id)
+            with get_session() as session, session.begin():
+                mark_stat_processed(
+                    match_id,
+                    ENGAGEMENTS_NAME,
+                    ENGAGEMENTS_VERSION,
+                    session,
+                    datetime.now(timezone.utc),
+                )
+        except Exception as e:
+            ok = False
+            print(f"❌ Engagements failed for match {match_id}: {e}")
+            traceback.print_exc()
+            _record_stat_failures(match_id, {ENGAGEMENTS_NAME})
 
     # Roll up the coarse Match.status for reporting / the website.
     with get_session() as session, session.begin():

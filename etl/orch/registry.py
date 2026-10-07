@@ -90,12 +90,20 @@ STATS: dict[str, RelationalStat] = {
 TIMELINE_NAME = "timeline"
 TIMELINE_VERSION = 1
 
+# The engagements S3 asset: each match's fights, detected and graded, as one
+# JSON file. Like the timeline, reconciled outside any DB transaction. Bump
+# ENGAGEMENTS_VERSION whenever detection or grading changes, to rebuild every
+# match's file.
+ENGAGEMENTS_NAME = "engagements"
+ENGAGEMENTS_VERSION = 1
+
 
 def desired_versions() -> dict[str, int]:
     """Current version of every materializable asset — the relational stats in
-    :data:`STATS` plus the timeline S3 asset. This is the "desired" state the
-    reconciler compares against ``match_stat_status``.
+    :data:`STATS` plus the timeline and engagements S3 assets. This is the
+    "desired" state the reconciler compares against ``match_stat_status``.
     """
     versions = {name: stat.version for name, stat in STATS.items()}
     versions[TIMELINE_NAME] = TIMELINE_VERSION
+    versions[ENGAGEMENTS_NAME] = ENGAGEMENTS_VERSION
     return versions
