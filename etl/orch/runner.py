@@ -9,7 +9,9 @@ from etl.db.loader import load_match_metadata, load_match_players
 from etl.parsing.match.relational.players import parse_match_metadata, parse_match_players
 from etl.orch.registry import STATS
 from etl.parsing.match.timeline.builder import parse_match_timeline
-from etl.storage.loader import load_match_timeline
+from etl.parsing.match.context import MatchContext
+from etl.parsing.match.clustering.engagements import build_engagements_asset
+from etl.storage.loader import load_match_timeline, load_match_engagements
 
 
 def process_match_relational(
@@ -71,3 +73,14 @@ def process_match_timeline(raw: RawMatchData, event_window_id: str) -> None:
     the uploader clears this match's stale chunks before writing.
     """
     load_match_timeline(parse_match_timeline(raw), event_window_id)
+
+
+def process_match_engagements(raw: RawMatchData, event_window_id: str) -> None:
+    """Materialize the engagements asset: detect and grade the match's fights
+    and upload them to S3 as one JSON file.
+
+    Runs with NO database transaction open, like the timeline. Idempotent: the
+    upload overwrites the previous file.
+    """
+    ctx = MatchContext(raw, event_window_id=event_window_id)
+    load_match_engagements(build_engagements_asset(ctx))

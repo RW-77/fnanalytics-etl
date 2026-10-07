@@ -43,6 +43,14 @@ def load_match_timeline(parsed: ParsedTimelineData, event_window_id):
     print(f"✅ Uploaded timeline for match {parsed.match_id}")
 
 
+def load_match_engagements(asset: dict) -> None:
+    """Upload a match's engagements file (see build_engagements_asset). One
+    object, overwritten on every run, so there is nothing stale to clean up."""
+    bucket = S3TournamentObjectStore(bucket=OBJECTS_BUCKET)
+    bucket.put_match_engagements(asset["match_id"], asset)
+    print(f"  - Uploaded engagements ({asset['engagement_count']} engagements)")
+
+
 def cleanup_match_timeline(match_id: str) -> int:
     """Delete any movement chunks stored for *match_id*.
 
