@@ -107,13 +107,22 @@ TIMELINE_VERSION = 3
 ENGAGEMENTS_NAME = "engagements"
 ENGAGEMENTS_VERSION = 1
 
+# The inventory S3 asset: each player's inventory changes over time, as one
+# JSON file. Reconciled outside any DB transaction. Bump INVENTORY_VERSION when
+# its format or parsing changes.
+INVENTORY_NAME = "inventory"
+# v2: drops a weapon's secondary (alternate-fire) entry, which showed as an
+# extra hotbar item.
+INVENTORY_VERSION = 2
+
 
 def desired_versions() -> dict[str, int]:
     """Current version of every materializable asset — the relational stats in
-    :data:`STATS` plus the timeline and engagements S3 assets. This is the
+    :data:`STATS` plus the timeline, engagements and inventory S3 assets. This is the
     "desired" state the reconciler compares against ``match_stat_status``.
     """
     versions = {name: stat.version for name, stat in STATS.items()}
     versions[TIMELINE_NAME] = TIMELINE_VERSION
     versions[ENGAGEMENTS_NAME] = ENGAGEMENTS_VERSION
+    versions[INVENTORY_NAME] = INVENTORY_VERSION
     return versions

@@ -199,6 +199,10 @@ class S3TournamentObjectStore:
         key = f"replays/matches/{match_id}/engagements.json"
         self.store.put_json(key, value)
 
+    def put_match_inventory(self, match_id: str, value) -> None:
+        key = f"replays/matches/{match_id}/inventory.json"
+        self.store.put_json(key, value)
+
     # ------------------------------------------------------------------
     # Map catalog
     # ------------------------------------------------------------------

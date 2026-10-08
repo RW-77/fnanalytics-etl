@@ -23,12 +23,15 @@ from etl.parsing.tournament.classification import get_region_code
 
 from etl.orch.runner import (
     process_match_engagements,
+    process_match_inventory,
     process_match_relational,
     process_match_timeline,
 )
 from etl.orch.registry import (
     ENGAGEMENTS_NAME,
     ENGAGEMENTS_VERSION,
+    INVENTORY_NAME,
+    INVENTORY_VERSION,
     STATS,
     TIMELINE_NAME,
     TIMELINE_VERSION,
@@ -151,6 +154,24 @@ def process_match(match_id: str, event_window_id: str, force: bool = False) -> b
             print(f"❌ Engagements failed for match {match_id}: {e}")
             traceback.print_exc()
             _record_stat_failures(match_id, {ENGAGEMENTS_NAME})
+
+    # Phase D — inventory asset, NO db transaction open (S3 upload).
+    if INVENTORY_NAME in stale:
+        try:
+            process_match_inventory(raw)
+            with get_session() as session, session.begin():
+                mark_stat_processed(
+                    match_id,
+                    INVENTORY_NAME,
+                    INVENTORY_VERSION,
+                    session,
+                    datetime.now(timezone.utc),
+                )
+        except Exception as e:
+            ok = False
+            print(f"❌ Inventory failed for match {match_id}: {e}")
+            traceback.print_exc()
+            _record_stat_failures(match_id, {INVENTORY_NAME})
 
     # Roll up the coarse Match.status for reporting / the website.
     with get_session() as session, session.begin():

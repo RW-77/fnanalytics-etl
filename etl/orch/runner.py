@@ -11,7 +11,8 @@ from etl.orch.registry import STATS, TIMELINE_VERSION
 from etl.parsing.match.timeline.builder import parse_match_timeline
 from etl.parsing.match.context import MatchContext
 from etl.parsing.match.clustering.engagements import build_engagements_asset
-from etl.storage.loader import load_match_timeline, load_match_engagements
+from etl.parsing.match.timeline.inventory import parse_match_inventory
+from etl.storage.loader import load_match_timeline, load_match_engagements, load_match_inventory
 
 
 def process_match_relational(
@@ -90,3 +91,13 @@ def process_match_engagements(raw: RawMatchData, event_window_id: str) -> None:
     """
     ctx = MatchContext(raw, event_window_id=event_window_id)
     load_match_engagements(build_engagements_asset(ctx))
+
+
+def process_match_inventory(raw: RawMatchData) -> None:
+    """Materialize the inventory asset: each player's inventory changes over
+    time, uploaded to S3 as one JSON file.
+
+    Runs with NO database transaction open, like the timeline. Idempotent: the
+    upload overwrites the previous file.
+    """
+    load_match_inventory(parse_match_inventory(raw))

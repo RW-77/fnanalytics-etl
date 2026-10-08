@@ -51,6 +51,15 @@ def load_match_engagements(asset: dict) -> None:
     print(f"  - Uploaded engagements ({asset['engagement_count']} engagements)")
 
 
+def load_match_inventory(asset: dict) -> None:
+    """Upload a match's inventory file (see build_inventory_asset). One
+    object, overwritten on every run, so there is nothing stale to clean up."""
+    bucket = S3TournamentObjectStore(bucket=OBJECTS_BUCKET)
+    bucket.put_match_inventory(asset["match_id"], asset)
+    changes = sum(len(c) for c in asset["players"].values())
+    print(f"  - Uploaded inventory ({len(asset['players'])} players, {changes} changes)")
+
+
 def cleanup_match_timeline(match_id: str) -> int:
     """Delete any movement chunks stored for *match_id*.
 
