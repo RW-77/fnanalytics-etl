@@ -13,11 +13,10 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-import requests
-
 from etl.api.fnapi_osirion_client import fetch_weapons
 from etl.db.loader import load_weapons, update_weapon_image_keys
 from etl.db.session import get_session
+from etl.storage.image_mirror import download_image
 from etl.storage.s3_client import S3TournamentObjectStore
 
 OBJECTS_BUCKET = os.getenv("TOURNAMENT_OBJECTS_BUCKET", "fortnite-tournament-objects")
@@ -89,13 +88,16 @@ def _mirror_one(
     weapon_id = weapon["id"]
     image_key = small_image_key = None
 
+    # download_image raises on an HTTP error or a non-image response, so an
+    # error page is never stored as the weapon's image (the failure is logged
+    # and the weapon retried on the next sync).
     if weapon.get("image_url"):
-        data = requests.get(weapon["image_url"], timeout=30).content
-        image_key = bucket.put_weapon_image(weapon_id, data)
+        data, content_type = download_image(weapon["image_url"])
+        image_key = bucket.put_weapon_image(weapon_id, data, content_type=content_type)
 
     if weapon.get("small_image_url"):
-        data = requests.get(weapon["small_image_url"], timeout=30).content
-        small_image_key = bucket.put_weapon_small_image(weapon_id, data)
+        data, content_type = download_image(weapon["small_image_url"])
+        small_image_key = bucket.put_weapon_small_image(weapon_id, data, content_type=content_type)
 
     return weapon_id, image_key, small_image_key
 
