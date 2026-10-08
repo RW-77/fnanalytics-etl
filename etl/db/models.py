@@ -152,6 +152,11 @@ class Match(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    knock_events: Mapped[list["KnockEvent"]] = relationship(
+        back_populates="match",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     fire_weapon_events: Mapped[list["FireWeaponEvent"]] = relationship(
         back_populates="match",
         cascade="all, delete-orphan",
@@ -562,6 +567,61 @@ class EliminationEvent(Base):
 
     def __repr__(self):
         return f"<EliminationEvent(actor_id={self.actor_id}, recipient_id={self.recipient_id}, match_id={self.match_id})>"
+
+
+class KnockEvent(Base):
+    """A player knocking down (DBNO) an opponent, one row per knock.
+
+    From the ``knockedDownEvents`` log, like EliminationEvent is from
+    ``eliminationEvents``: ``actor_id`` knocked ``recipient_id``. Self-knocks
+    and knocks on a teammate are excluded, so headline knocks =
+    ``COUNT(*) GROUP BY actor_id``. ``gun_type`` is the log's integer gun
+    category.
+    """
+    __tablename__ = "knock_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("matches.match_id", ondelete="CASCADE")
+    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime)
+    game_time_seconds: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # Foreign keys to players
+    actor_id: Mapped[int] = mapped_column(
+        ForeignKey("match_players.id", ondelete="CASCADE")
+    )
+    recipient_id: Mapped[int] = mapped_column(
+        ForeignKey("match_players.id", ondelete="CASCADE")
+    )
+
+    gun_type: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    # Positions
+    actor_x: Mapped[float] = mapped_column(Float)
+    actor_y: Mapped[float] = mapped_column(Float)
+    actor_z: Mapped[float] = mapped_column(Float)
+    recipient_x: Mapped[float] = mapped_column(Float)
+    recipient_y: Mapped[float] = mapped_column(Float)
+    recipient_z: Mapped[float] = mapped_column(Float)
+    distance: Mapped[float] = mapped_column(Float)
+
+    zone: Mapped[int] = mapped_column(Integer)
+
+    # Relationships
+    match: Mapped["Match"] = relationship(back_populates="knock_events")
+
+    __table_args__ = (
+        Index('idx_knock_match', 'match_id'),
+        Index('idx_knock_actor', 'actor_id'),
+        Index('idx_knock_recipient', 'recipient_id'),
+    )
+
+    def __repr__(self):
+        return (
+            f"<KnockEvent(actor_id={self.actor_id}, recipient_id={self.recipient_id}, "
+            f"match_id={self.match_id})>"
+        )
 
 
 class FireWeaponEvent(Base):

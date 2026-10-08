@@ -15,9 +15,11 @@ from etl.db.loader import (
     load_builds_placed,
     load_alive_intervals,
     load_match_cosmetics,
+    load_knock_events,
 )
 from etl.parsing.match.relational.combat import (
     parse_elims,
+    parse_opponent_knocks,
     parse_damage_dealt,
     parse_shots,
 )
@@ -69,6 +71,7 @@ STATS: dict[str, RelationalStat] = {
         # `actualDamage` unpopulated (0), so those matches aren't zeroed out.
         RelationalStat("damage", 3, parse_damage_dealt, load_damage_events),
         RelationalStat("elims", 1, parse_elims, load_elimination_events),
+        RelationalStat("knocks", 1, parse_opponent_knocks, load_knock_events),
         RelationalStat("shots", 1, parse_shots, load_shot_events),
         RelationalStat(
             "damage_contribution",

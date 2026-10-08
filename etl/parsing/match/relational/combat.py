@@ -176,6 +176,19 @@ def parse_knocks(raw: RawMatchData, *, max_gap: int = 600_000):
     return enriched_knock_events
 
 
+def parse_opponent_knocks(raw: RawMatchData) -> list[dict]:
+    """The ``knocks`` stat's rows: :func:`parse_knocks` (already without
+    self-knocks) minus knocks on a teammate, by the match's ``teams`` log. A
+    knock where either player's team is unknown is kept.
+    """
+    team_of = {pid: t["teamId"] for t in raw.teams for pid in t["epicId"]}
+    return [
+        k for k in parse_knocks(raw)
+        if team_of.get(k["actor_id"]) is None
+        or team_of.get(k["actor_id"]) != team_of.get(k["recipient_id"])
+    ]
+
+
 def parse_hitscan_elims(raw: RawMatchData) -> list[dict]:
     """
     Returns a time-ordered list of elimination events

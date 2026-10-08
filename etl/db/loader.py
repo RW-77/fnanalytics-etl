@@ -26,6 +26,7 @@ from etl.db.models import (
     EventWindowTeam,
     EventWindowTeamMatch,
     EliminationEvent,
+    KnockEvent,
     StaticItem,
     Tournament,
     Event,
@@ -402,6 +403,73 @@ def load_elimination_events(elim_events: list[dict], ctx: LoadContext) -> int:
 
     print(f"✅ Loaded {len(elim_records)} elimination events")
     return len(elim_records)
+
+
+def load_knock_events(knock_events: list[dict], ctx: LoadContext) -> int:
+    """
+    Bulk insert knock events (see parse_opponent_knocks).
+
+    Args:
+        knock_events: List of dicts with keys:
+            - timestamp (int): Unix timestamp in microseconds
+            - game_time_seconds (float): Seconds since match start
+            - actor_id (str): Knocker's Epic ID
+            - recipient_id (str): Knocked player's Epic ID
+            - gun_type (int | None): The log's gun category
+            - ax, ay, az / rx, ry, rz (float): Actor / recipient coordinates
+            - distance (float): Distance between them
+            - zone (int): Storm zone number
+        ctx: LoadContext carrying match_id, player_id_map, and session
+
+    Returns:
+        int: Number of events loaded
+    """
+    # Own our rows: clear this match's existing rows before (re)inserting.
+    ctx.session.execute(
+        delete(KnockEvent).where(KnockEvent.match_id == ctx.match_id)
+    )
+
+    if not knock_events:
+        print("⚠️  No knock events to load")
+        return 0
+
+    match_id = ctx.match_id
+    player_id_map = ctx.player_id_map
+    session = ctx.session
+
+    print(f"Loading {len(knock_events)} knock events...")
+
+    records = []
+    for event in knock_events:
+        actor_db_id = player_id_map.get(event["actor_id"])
+        recipient_db_id = player_id_map.get(event["recipient_id"])
+        if actor_db_id is None or recipient_db_id is None:
+            raise ValueError(
+                f"Missing MatchPlayer row for knock event in match {match_id}: "
+                f"actor={event['actor_id']}, recipient={event['recipient_id']}"
+            )
+
+        records.append({
+            "match_id": match_id,
+            "timestamp": datetime.fromtimestamp(event["timestamp"] / 1e6),
+            "game_time_seconds": event.get("game_time_seconds"),
+            "actor_id": actor_db_id,
+            "recipient_id": recipient_db_id,
+            "gun_type": event.get("gun_type"),
+            "actor_x": event["ax"],
+            "actor_y": event["ay"],
+            "actor_z": event["az"],
+            "recipient_x": event["rx"],
+            "recipient_y": event["ry"],
+            "recipient_z": event["rz"],
+            "distance": event["distance"],
+            "zone": event["zone"],
+        })
+
+    session.execute(insert(KnockEvent), records)
+
+    print(f"✅ Loaded {len(records)} knock events")
+    return len(records)
 
 
 def load_shot_events(shot_events: list[dict], ctx: LoadContext) -> int:
