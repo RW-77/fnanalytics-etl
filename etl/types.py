@@ -54,6 +54,7 @@ class RawMatchData:
     build_destroy_events: JsonList
     cue_damage_hit_events: JsonList
     inside_storm_update_events: JsonList
+    cosmetics: JsonList
 
 
 @dataclass(frozen=True)

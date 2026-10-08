@@ -13,6 +13,7 @@ from etl.db.models import (
     Map,
     Match,
     MatchPlayer,
+    MatchPlayerCosmetic,
     DamageDealtEvent,
     DamageContributionEvent,
     AssistEvent,
@@ -937,6 +938,59 @@ def load_alive_intervals(alive_intervals: list[dict], ctx: LoadContext) -> int:
     session.execute(insert(AliveInterval), records)
 
     print(f"✅ Loaded {len(records)} alive intervals")
+    return len(records)
+
+
+def load_match_cosmetics(cosmetics: list[dict], ctx: LoadContext) -> int:
+    """
+    Bulk insert each player's equipped cosmetics.
+
+    Args:
+        cosmetics: List of dicts from parse_match_cosmetics() with keys:
+            - player_id (str): The player's Epic ID
+            - loadout_slot (str): Raw slot name, e.g. 'LoadoutSlot_Character'
+            - cosmetic_id (str): The equipped cosmetic's id
+            - styles (list): Raw cosmeticStyles entries
+        ctx: LoadContext carrying match_id, player_id_map, and session
+
+    Returns:
+        int: Number of rows loaded
+    """
+    # Own our rows: clear this match's existing rows before (re)inserting.
+    ctx.session.execute(
+        delete(MatchPlayerCosmetic).where(MatchPlayerCosmetic.match_id == ctx.match_id)
+    )
+
+    if not cosmetics:
+        print("⚠️  No player cosmetics to load")
+        return 0
+
+    match_id = ctx.match_id
+    player_id_map = ctx.player_id_map
+    session = ctx.session
+
+    print(f"Loading {len(cosmetics)} player cosmetics...")
+
+    records = []
+    for cosmetic in cosmetics:
+        player_db_id = player_id_map.get(cosmetic["player_id"])
+        if player_db_id is None:
+            raise ValueError(
+                f"Missing MatchPlayer row for player cosmetic in match {match_id}: "
+                f"player={cosmetic['player_id']}"
+            )
+
+        records.append({
+            "match_id": match_id,
+            "player_id": player_db_id,
+            "loadout_slot": cosmetic["loadout_slot"],
+            "cosmetic_id": cosmetic["cosmetic_id"],
+            "styles": cosmetic["styles"],
+        })
+
+    session.execute(insert(MatchPlayerCosmetic), records)
+
+    print(f"✅ Loaded {len(records)} player cosmetics")
     return len(records)
 
 

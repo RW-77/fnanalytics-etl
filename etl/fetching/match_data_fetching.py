@@ -50,6 +50,7 @@ GENERAL_EVENT_TYPES = [
     "buildDestroyEvents",
     "gameplayCueDamageHitEvents",
     "insideStormUpdateEvents",
+    "cosmeticsV2",
 ]
 
 RAW_MATCH_DATA_FIELDS = {
@@ -78,6 +79,7 @@ RAW_MATCH_DATA_FIELDS = {
     "buildDestroyEvents": "build_destroy_events",
     "gameplayCueDamageHitEvents": "cue_damage_hit_events",
     "insideStormUpdateEvents": "inside_storm_update_events",
+    "cosmeticsV2": "cosmetics",
 }
 
 

@@ -14,6 +14,7 @@ from etl.db.loader import (
     load_revive_events,
     load_builds_placed,
     load_alive_intervals,
+    load_match_cosmetics,
 )
 from etl.parsing.match.relational.combat import (
     parse_elims,
@@ -29,6 +30,7 @@ from etl.parsing.match.relational.support import parse_reboots
 from etl.parsing.match.relational.support import parse_revives
 from etl.parsing.match.relational.builds import parse_builds_placed
 from etl.parsing.match.relational.time_alive import parse_time_alive
+from etl.parsing.match.relational.cosmetics import parse_match_cosmetics
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,7 @@ STATS: dict[str, RelationalStat] = {
         RelationalStat("revives", 1, parse_revives, load_revive_events),
         RelationalStat("builds_placed", 1, parse_builds_placed, load_builds_placed),
         RelationalStat("time_alive", 1, parse_time_alive, load_alive_intervals),
+        RelationalStat("cosmetics", 1, parse_match_cosmetics, load_match_cosmetics),
     )
 }
 
