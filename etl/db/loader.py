@@ -25,6 +25,7 @@ from etl.db.models import (
     EventWindowTeam,
     EventWindowTeamMatch,
     EliminationEvent,
+    StaticItem,
     Tournament,
     Event,
     Weapon,
@@ -1143,6 +1144,34 @@ def update_augment_image_keys(
 ) -> None:
     """Write S3 keys back to a batch of augment rows after image mirroring."""
     _update_image_keys(Augment, results, session)
+
+
+def sync_static_item_rows(rows: list[dict], session: Session) -> None:
+    """Make the static_items table match the hand-maintained map exactly.
+
+    Every row is upserted (all fields refreshed, synced_at = now) and rows for
+    items no longer in the map are deleted, so removing an entry from
+    ``STATIC_ITEMS`` removes it here on the next sync.
+    """
+    now = datetime.now(timezone.utc)
+    ids = [r["id"] for r in rows]
+    session.execute(delete(StaticItem).where(StaticItem.id.not_in(ids)))
+
+    if not rows:
+        return
+
+    stmt = pg_insert(StaticItem).values([{**r, "synced_at": now} for r in rows])
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[StaticItem.id],
+        set_={
+            "name":      stmt.excluded.name,
+            "category":  stmt.excluded.category,
+            "alias_of":  stmt.excluded.alias_of,
+            "image_key": stmt.excluded.image_key,
+            "synced_at": stmt.excluded.synced_at,
+        },
+    )
+    session.execute(stmt)
 
 
 def upsert_map(

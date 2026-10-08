@@ -306,6 +306,15 @@ class S3TournamentObjectStore:
         self.store.put_json(key, augments)
         return key
 
+    # ------------------------------------------------------------------
+    # Static (hand-maintained) items
+    # ------------------------------------------------------------------
+
+    def put_static_item_image(self, item_id: str, data: bytes, content_type: str) -> str:
+        key = f"static_items/images/{item_id}.{_image_extension(content_type)}"
+        self.store.put_bytes(key, data, content_type=content_type)
+        return key
+
 
 IMAGE_EXTENSIONS = {
     "image/webp": "webp",
