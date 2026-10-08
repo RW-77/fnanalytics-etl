@@ -1,11 +1,13 @@
 import math
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import and_, case, delete, insert, null, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from etl.db.models import (
+    Augment,
+    Cosmetic,
     EventWindow,
     FireWeaponEvent,
     Map,
@@ -1023,6 +1025,124 @@ def update_weapon_image_keys(
         .where(Weapon.id == weapon_id)
         .values(image_key=image_key, small_image_key=small_image_key)
     )
+
+
+# Rows per INSERT statement for the large catalogs. The cosmetics catalog is
+# ~20k rows, and one multi-row VALUES statement for all of it would blow past
+# Postgres's 65,535 bind-parameter limit.
+CATALOG_UPSERT_CHUNK_SIZE = 1000
+
+
+def _upsert_image_catalog(model, parsed: list[dict], session: Session) -> set[str]:
+    """Upsert catalog rows whose images are mirrored to S3 (cosmetics, augments).
+
+    On first insert:  all fields written, first_seen_at = last_seen_at = now.
+    On conflict:      every parsed field is overwritten; first_seen_at is left
+                      alone. An already-mirrored image_key / small_image_key is
+                      kept unless that image's source URL changed, in which case
+                      it is cleared so the image is mirrored again.
+
+    Returns:
+        IDs with an image URL whose S3 key is still NULL after the upsert —
+        new rows, changed URLs, or previously failed mirrors.
+    """
+    if not parsed:
+        return set()
+
+    now = datetime.now(timezone.utc)
+    rows = [{**r, "first_seen_at": now, "last_seen_at": now} for r in parsed]
+    table = model.__table__
+
+    for start in range(0, len(rows), CATALOG_UPSERT_CHUNK_SIZE):
+        stmt = pg_insert(model).values(rows[start:start + CATALOG_UPSERT_CHUNK_SIZE])
+        set_ = {
+            column: stmt.excluded[column]
+            for column in rows[0]
+            if column not in ("id", "first_seen_at")
+        }
+        # In ON CONFLICT DO UPDATE, table.c.* is the existing (pre-update) row.
+        set_["image_key"] = case(
+            (table.c.image_url.is_distinct_from(stmt.excluded.image_url), null()),
+            else_=table.c.image_key,
+        )
+        set_["small_image_key"] = case(
+            (table.c.small_image_url.is_distinct_from(stmt.excluded.small_image_url), null()),
+            else_=table.c.small_image_key,
+        )
+        session.execute(stmt.on_conflict_do_update(index_elements=[table.c.id], set_=set_))
+    session.flush()
+
+    return set(
+        session.scalars(
+            select(model.id).where(
+                or_(
+                    and_(model.image_url.isnot(None), model.image_key.is_(None)),
+                    and_(model.small_image_url.isnot(None), model.small_image_key.is_(None)),
+                )
+            )
+        )
+    )
+
+
+def _update_image_keys(
+    model,
+    results: list[tuple[str, str | None, str | None]],
+    session: Session,
+) -> None:
+    """Bulk-write (id, image_key, small_image_key) results back after mirroring."""
+    if not results:
+        return
+    session.execute(
+        update(model),
+        [
+            {"id": item_id, "image_key": image_key, "small_image_key": small_image_key}
+            for item_id, image_key, small_image_key in results
+        ],
+    )
+
+
+def load_cosmetics(parsed: list[dict], session: Session) -> set[str]:
+    """Upsert the cosmetic catalog (incl. banners) into the cosmetics table.
+
+    See :func:`_upsert_image_catalog`. Returns the IDs whose images still need
+    to be mirrored to S3.
+    """
+    needs_images = _upsert_image_catalog(Cosmetic, parsed, session)
+    print(
+        f"✅ Upserted {len(parsed)} cosmetics "
+        f"({len(needs_images)} need image mirroring)"
+    )
+    return needs_images
+
+
+def update_cosmetic_image_keys(
+    results: list[tuple[str, str | None, str | None]],
+    session: Session,
+) -> None:
+    """Write S3 keys back to a batch of cosmetic rows after image mirroring."""
+    _update_image_keys(Cosmetic, results, session)
+
+
+def load_augments(parsed: list[dict], session: Session) -> set[str]:
+    """Upsert the augment catalog into the augments table.
+
+    See :func:`_upsert_image_catalog`. Returns the IDs whose images still need
+    to be mirrored to S3.
+    """
+    needs_images = _upsert_image_catalog(Augment, parsed, session)
+    print(
+        f"✅ Upserted {len(parsed)} augments "
+        f"({len(needs_images)} need image mirroring)"
+    )
+    return needs_images
+
+
+def update_augment_image_keys(
+    results: list[tuple[str, str | None, str | None]],
+    session: Session,
+) -> None:
+    """Write S3 keys back to a batch of augment rows after image mirroring."""
+    _update_image_keys(Augment, results, session)
 
 
 def upsert_map(

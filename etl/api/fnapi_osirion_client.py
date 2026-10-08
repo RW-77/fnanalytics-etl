@@ -46,6 +46,47 @@ def fetch_weapons(lang: str = "en") -> JsonList:
     return data["weapons"]
 
 
+def fetch_cosmetics(lang: str = "en") -> JsonList:
+    """Fetch every cosmetic (~20k items, ~25 MB): outfits, back blings,
+    pickaxes, gliders, emotes, wraps, vehicle parts, jam tracks, ...
+
+    Each item carries ``type`` (``{id, template, name}``), ``rarity``, ``set``,
+    ``series``, ``introduction``, ``iconUrl`` / ``smallIconUrl``, ``variants``
+    (style channels with per-option icons), ``gameplayTags``, ``path`` and
+    ``shopHistory``. Upcoming (unreleased) cosmetics are already included.
+    Banner icons are not — see :func:`fetch_cosmetic_banners`.
+    """
+    response = requests.get(
+        f"{FNAPI_BASE_URL}/cosmetics", params={"lang": lang}, timeout=REQUEST_TIMEOUT_S
+    )
+    response.raise_for_status()
+    data: JsonDict = response.json()
+    return data["cosmetics"]
+
+
+def fetch_cosmetic_banners(lang: str = "en") -> JsonList:
+    """Fetch every banner icon (``id``, ``path``, ``name``, ``description``,
+    ``iconUrl``, ``smallIconUrl``) — the ``LoadoutSlot_Banner_Icon`` ids, which
+    the main cosmetics listing omits."""
+    response = requests.get(
+        f"{FNAPI_BASE_URL}/cosmetics/banners", params={"lang": lang}, timeout=REQUEST_TIMEOUT_S
+    )
+    response.raise_for_status()
+    data: JsonDict = response.json()
+    return data["banners"]
+
+
+def fetch_augments(lang: str = "en") -> JsonList:
+    """Fetch every augment / boon / medallion. Ids match inventory ``itemId``s
+    (e.g. ``PAID_VividRazor_Greedy``)."""
+    response = requests.get(
+        f"{FNAPI_BASE_URL}/augments", params={"lang": lang}, timeout=REQUEST_TIMEOUT_S
+    )
+    response.raise_for_status()
+    data: JsonDict = response.json()
+    return data["augments"]
+
+
 # Valid TournamentRegion values for ``fetch_tournaments``; None returns all.
 TOURNAMENT_REGIONS = ("NAC", "NAE", "NAW", "EU", "ASIA", "ME", "OCE", "BR", "ONSITE")
 

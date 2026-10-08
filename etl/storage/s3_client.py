@@ -260,6 +260,66 @@ class S3TournamentObjectStore:
         self.store.put_json(key, weapons)
         return key
 
+    # ------------------------------------------------------------------
+    # Cosmetic catalog
+    # ------------------------------------------------------------------
+    # Unlike weapons (always .webp), cosmetic sources mix webp and jpeg, so the
+    # extension follows the downloaded content type.
+
+    def put_cosmetic_image(self, cosmetic_id: str, data: bytes, content_type: str) -> str:
+        key = f"cosmetics/images/{cosmetic_id}.{_image_extension(content_type)}"
+        self.store.put_bytes(key, data, content_type=content_type)
+        return key
+
+    def put_cosmetic_small_image(self, cosmetic_id: str, data: bytes, content_type: str) -> str:
+        key = f"cosmetics/images/small/{cosmetic_id}.{_image_extension(content_type)}"
+        self.store.put_bytes(key, data, content_type=content_type)
+        return key
+
+    def put_cosmetic_snapshot(self, timestamp_str: str, payload: dict) -> str:
+        """Store a full timestamped snapshot of the cosmetics + banners payloads.
+
+        timestamp_str should be an ISO-8601 string safe for use in S3 keys,
+        e.g. '2026-06-07T14-30-00'.
+        """
+        key = f"cosmetics/snapshots/{timestamp_str}.json"
+        self.store.put_json(key, payload)
+        return key
+
+    # ------------------------------------------------------------------
+    # Augment catalog
+    # ------------------------------------------------------------------
+
+    def put_augment_image(self, augment_id: str, data: bytes, content_type: str) -> str:
+        key = f"augments/images/{augment_id}.{_image_extension(content_type)}"
+        self.store.put_bytes(key, data, content_type=content_type)
+        return key
+
+    def put_augment_small_image(self, augment_id: str, data: bytes, content_type: str) -> str:
+        key = f"augments/images/small/{augment_id}.{_image_extension(content_type)}"
+        self.store.put_bytes(key, data, content_type=content_type)
+        return key
+
+    def put_augment_snapshot(self, timestamp_str: str, augments: list) -> str:
+        """Store a full timestamped snapshot of the augments payload."""
+        key = f"augments/snapshots/{timestamp_str}.json"
+        self.store.put_json(key, augments)
+        return key
+
+
+IMAGE_EXTENSIONS = {
+    "image/webp": "webp",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+}
+
+
+def _image_extension(content_type: str) -> str:
+    try:
+        return IMAGE_EXTENSIONS[content_type]
+    except KeyError:
+        raise ValueError(f"Unsupported image content type: {content_type!r}") from None
+
 
 if __name__ == "__main__":
     session = boto3.Session(profile_name="fortnite-tournament-logs-s3")

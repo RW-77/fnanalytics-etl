@@ -192,6 +192,11 @@ class Match(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    player_cosmetics: Mapped[list["MatchPlayerCosmetic"]] = relationship(
+        back_populates="match",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         Index("idx_match_session", "session_id"),
@@ -301,6 +306,156 @@ class MatchWeapon(Base):
 
     def __repr__(self):
         return f"<MatchWeapon(weapon_id={self.weapon_id!r}, match_id={self.match_id!r})>"
+
+
+class Cosmetic(Base):
+    """Global cosmetic catalog synced from fnapi.osirion.gg by ``sync_cosmetics``.
+
+    One row per cosmetic from ``/v1/cosmetics`` (outfits, back blings, pickaxes,
+    gliders, emotes, wraps, ...) plus every banner icon from
+    ``/v1/cosmetics/banners``, which the main listing omits; banners get
+    ``cosmetic_type = 'homebasebannericon'`` (sibling of fnapi's own
+    ``homebasebannercolor``). ``id`` is the id ``match_player_cosmetics`` records
+    for each loadout slot. Snapshots of the raw payloads are stored in S3 at
+    cosmetics/snapshots/{timestamp}.json.
+    """
+    __tablename__ = "cosmetics"
+
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)  # API cosmetic id
+    name: Mapped[str | None] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(String(1000))
+    cosmetic_type: Mapped[str] = mapped_column(String(50))  # API type.id, e.g. 'character'
+    rarity: Mapped[str | None] = mapped_column(String(50))
+    set_name: Mapped[str | None] = mapped_column(String(200))
+    series_name: Mapped[str | None] = mapped_column(String(100))
+    # Internal season number (introduction.id) and its text, e.g. 26 / "Chapter 4, Season 4"
+    introduction_season: Mapped[int | None] = mapped_column(Integer)
+    introduction: Mapped[str | None] = mapped_column(String(100))
+    gameplay_tags: Mapped[list | None] = mapped_column(JSON)
+    # Selectable style channels and their options (name + swatch icon url) —
+    # resolves a loadout's ``styles[].activeTag`` to a human-readable style.
+    variants: Mapped[list | None] = mapped_column(JSON)
+
+    # S3 keys — null until the image has been mirrored. Extension follows the
+    # source's content type (mostly .webp, some .jpg).
+    image_key: Mapped[str | None] = mapped_column(String(300))
+    small_image_key: Mapped[str | None] = mapped_column(String(300))
+    # Originals retained so URL changes on re-sync trigger a re-mirror
+    image_url: Mapped[str | None] = mapped_column(String(500))
+    small_image_url: Mapped[str | None] = mapped_column(String(500))
+
+    # Bookkeeping
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index('idx_cosmetic_type', 'cosmetic_type'),
+        Index('idx_cosmetic_rarity', 'rarity'),
+    )
+
+    def __repr__(self):
+        return f"<Cosmetic(id={self.id!r}, name={self.name!r}, type={self.cosmetic_type!r})>"
+
+
+class MatchPlayerCosmetic(Base):
+    """One equipped cosmetic: a player's item in one loadout slot for one match.
+
+    Sourced from the ``cosmeticsV2`` match log — one row per (player, slot),
+    ~35 slots per player. ``loadout_slot`` is the raw slot name
+    (``LoadoutSlot_Character`` is the outfit/skin, ``LoadoutSlot_Pickaxe`` the
+    pickaxe, ``LoadoutSlot_Emote_0`` the first emote, ...). ``cosmetic_id`` joins
+    to ``cosmetics.id``; it is a soft reference (no FK) since a brand-new
+    cosmetic can appear in a match before the next catalog sync. ``styles`` is
+    the raw ``cosmeticStyles`` list (``channel`` / ``activeTag`` /
+    ``customData``) — resolve against ``cosmetics.variants`` for style names.
+    """
+    __tablename__ = "match_player_cosmetics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("matches.match_id", ondelete="CASCADE")
+    )
+    player_id: Mapped[int] = mapped_column(
+        ForeignKey("match_players.id", ondelete="CASCADE")
+    )
+
+    loadout_slot: Mapped[str] = mapped_column(String(50))
+    cosmetic_id: Mapped[str] = mapped_column(String(100))
+    styles: Mapped[list | None] = mapped_column(JSON)
+
+    # Relationships
+    match: Mapped["Match"] = relationship(back_populates="player_cosmetics")
+
+    __table_args__ = (
+        Index('idx_mpc_match', 'match_id'),
+        Index('idx_mpc_player_slot', 'player_id', 'loadout_slot', unique=True),
+        Index('idx_mpc_cosmetic', 'cosmetic_id'),
+    )
+
+    def __repr__(self):
+        return (
+            f"<MatchPlayerCosmetic(player_id={self.player_id}, "
+            f"loadout_slot={self.loadout_slot!r}, cosmetic_id={self.cosmetic_id!r})>"
+        )
+
+
+class Augment(Base):
+    """Global augment catalog synced from fnapi.osirion.gg/v1/augments by
+    ``sync_augments`` — augments, boons and medallions.
+
+    ``id`` matches the inventory ``itemId`` exactly (``PAID_VividRazor_Greedy``,
+    ...). Snapshots of the raw payload are stored in S3 at
+    augments/snapshots/{timestamp}.json.
+    """
+    __tablename__ = "augments"
+
+    id: Mapped[str] = mapped_column(String(200), primary_key=True)  # API augment id
+    name: Mapped[str | None] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(String(1000))
+    rarity: Mapped[str | None] = mapped_column(String(50))
+    gameplay_tags: Mapped[list | None] = mapped_column(JSON)
+
+    # S3 keys — null until the image has been mirrored
+    image_key: Mapped[str | None] = mapped_column(String(300))
+    small_image_key: Mapped[str | None] = mapped_column(String(300))
+    # Originals retained so URL changes on re-sync trigger a re-mirror
+    image_url: Mapped[str | None] = mapped_column(String(500))
+    small_image_url: Mapped[str | None] = mapped_column(String(500))
+
+    # Bookkeeping
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime)
+
+    def __repr__(self):
+        return f"<Augment(id={self.id!r}, name={self.name!r}, rarity={self.rarity!r})>"
+
+
+class StaticItem(Base):
+    """Hand-maintained inventory items that no fnapi catalog covers — consumables,
+    ammo, materials, build pieces, keycards — synced by ``sync_static_items``
+    from :data:`etl.static.items.STATIC_ITEMS`.
+
+    ``image_key`` is either an icon uploaded from ``etl/static/item_icons/``
+    (static_items/images/{id}.{ext}) or, for an aliased item, the referenced
+    weapon's existing ``weapons.image_key``. Null when no icon is available.
+    """
+    __tablename__ = "static_items"
+
+    id: Mapped[str] = mapped_column(String(200), primary_key=True)  # inventory itemId
+    name: Mapped[str | None] = mapped_column(String(200))
+    category: Mapped[str | None] = mapped_column(String(50))
+    alias_of: Mapped[str | None] = mapped_column(String(200))  # weapons.id
+    image_key: Mapped[str | None] = mapped_column(String(300))
+
+    # When this row was last written by sync_static_items
+    synced_at: Mapped[datetime] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index('idx_static_item_category', 'category'),
+    )
+
+    def __repr__(self):
+        return f"<StaticItem(id={self.id!r}, name={self.name!r}, category={self.category!r})>"
 
 
 class DamageDealtEvent(Base):
