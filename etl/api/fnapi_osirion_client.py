@@ -6,10 +6,14 @@ from etl.types import JsonDict, JsonList
 
 FNAPI_BASE_URL = "https://fnapi.osirion.gg/v1"
 
+# Without a timeout a stalled connection blocks forever — fatal for the live
+# leaderboard loop (etl.jobs.live_tournament), which must keep ticking.
+REQUEST_TIMEOUT_S = 30
+
 
 def fetch_maps() -> JsonList:
     """Fetch all map modes for the current build. Useful for snapshots."""
-    response = requests.get(f"{FNAPI_BASE_URL}/maps")
+    response = requests.get(f"{FNAPI_BASE_URL}/maps", timeout=REQUEST_TIMEOUT_S)
     response.raise_for_status()
     data: JsonDict = response.json()
     return data["maps"]
@@ -26,6 +30,7 @@ def fetch_map_mode(mode_id: str = "br", lang: str = "en") -> JsonDict:
     response = requests.get(
         f"{FNAPI_BASE_URL}/maps/mode",
         params={"id": mode_id, "lang": lang},
+        timeout=REQUEST_TIMEOUT_S,
     )
     response.raise_for_status()
     data: JsonDict = response.json()
@@ -33,7 +38,9 @@ def fetch_map_mode(mode_id: str = "br", lang: str = "en") -> JsonDict:
 
 
 def fetch_weapons(lang: str = "en") -> JsonList:
-    response = requests.get(f"{FNAPI_BASE_URL}/weapons", params={"lang": lang})
+    response = requests.get(
+        f"{FNAPI_BASE_URL}/weapons", params={"lang": lang}, timeout=REQUEST_TIMEOUT_S
+    )
     response.raise_for_status()
     data: JsonDict = response.json()
     return data["weapons"]
@@ -70,7 +77,9 @@ def fetch_tournaments(
     }
     if region is not None:
         params["region"] = region
-    response = requests.get(f"{FNAPI_BASE_URL}/tournaments", params=params)
+    response = requests.get(
+        f"{FNAPI_BASE_URL}/tournaments", params=params, timeout=REQUEST_TIMEOUT_S
+    )
     response.raise_for_status()
     data: JsonDict = response.json()
     return data["tournaments"]
@@ -96,6 +105,7 @@ def fetch_tournament_leaderboard_page(
             "leaderboardEventWindowId": leaderboard_event_window_id,
             "page": page,
         },
+        timeout=REQUEST_TIMEOUT_S,
     )
     response.raise_for_status()
     data: JsonDict = response.json()
