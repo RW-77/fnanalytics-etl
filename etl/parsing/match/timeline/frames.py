@@ -5,7 +5,15 @@ from etl.types import RawMatchData
 TIMELINE_HZ = 30
 
 # Column indices for the per-player state vector in each frame (shape: [N_players, 8])
+# While a player is knocked, _HP holds their knocked (DBNO) health — the value
+# that decays until they're revived or eliminated — rather than their regular
+# health, which the logs drop to 0 at the knock.
 _X, _Y, _Z, _YAW, _HP, _SHIELD, _ALIVE, _KNOCKED = range(8)
+
+# Knocked health at the moment of a knock. knockedHealthUpdateEvents only
+# reports it from ~2.4 s later (already bled to ~98, or lower if the player
+# was hit while down), so it's started here.
+_KNOCKED_START_HP = 100.0
 
 
 def parse_match_frames(
@@ -38,6 +46,7 @@ def _build_event_list(raw: RawMatchData) -> list[dict]:
         ("knock",         raw.knocked_events),
         ("elimination",   raw.elimination_events),
         ("health_update", raw.health_update_events),
+        ("knocked_health", raw.knocked_health_update_events),
         ("shield_update", raw.shield_update_events),
         ("revive",        raw.revive_events),
         ("reboot",        raw.reboot_events),
@@ -63,6 +72,16 @@ def _simulate_frames(
     state = np.zeros((N, 8), dtype=np.float32)
     state[:, _HP] = 100.0
     state[:, _ALIVE] = 1.0
+    # Knocked health, tracked apart from regular health and written to _HP
+    # only in the frames where the player is knocked (see _frame), so the order
+    # of same-instant events (a revive and its health update) doesn't matter.
+    dbno_hp = np.zeros(N, dtype=np.float32)
+
+    def _frame() -> np.ndarray:
+        frame = state.copy()
+        knocked = frame[:, _KNOCKED] > 0.5
+        frame[knocked, _HP] = dbno_hp[knocked]
+        return frame
 
     frames: list[np.ndarray] = []
     movement_keyframes: dict[int, list[tuple[int, np.ndarray]]] = {}
@@ -78,7 +97,7 @@ def _simulate_frames(
 
         # flush frames up to this event's timestamp
         while next_t <= timestamp:
-            frames.append(state.copy())
+            frames.append(_frame())
             next_t += dt
 
         target_id = data.get("targetId")
@@ -102,6 +121,7 @@ def _simulate_frames(
             case "knock":
                 if target_idx is not None:
                     state[target_idx, _KNOCKED] = 1.0
+                    dbno_hp[target_idx] = _KNOCKED_START_HP
             case "elimination":
                 if target_idx is not None:
                     state[target_idx, _ALIVE] = 0.0
@@ -111,6 +131,9 @@ def _simulate_frames(
             case "health_update":
                 if idx is not None:
                     state[idx, _HP] = data["value"]
+            case "knocked_health":
+                if idx is not None:
+                    dbno_hp[idx] = data["value"]
             case "shield_update":
                 if idx is not None:
                     state[idx, _SHIELD] = data["value"]

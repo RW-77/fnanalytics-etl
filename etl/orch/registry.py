@@ -94,7 +94,11 @@ STATS: dict[str, RelationalStat] = {
 # transaction), but it is a versioned, reconciled asset — bump TIMELINE_VERSION
 # to re-materialize (re-upload) every match's timeline.
 TIMELINE_NAME = "timeline"
-TIMELINE_VERSION = 1
+# v2: a knocked player's health column carries their knocked (DBNO) health
+# from knockedHealthUpdateEvents instead of the 0 the regular log drops to.
+# v3: knocked health starts at 100 at the knock (v2 used the first logged
+# value, which arrives ~2.4 s later).
+TIMELINE_VERSION = 3
 
 # The engagements S3 asset: each match's fights, detected and graded, as one
 # JSON file. Like the timeline, reconciled outside any DB transaction. Bump

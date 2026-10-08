@@ -7,7 +7,7 @@ from etl.db.context import LoadContext
 from etl.db.models import Match
 from etl.db.loader import load_match_metadata, load_match_players
 from etl.parsing.match.relational.players import parse_match_metadata, parse_match_players
-from etl.orch.registry import STATS
+from etl.orch.registry import STATS, TIMELINE_VERSION
 from etl.parsing.match.timeline.builder import parse_match_timeline
 from etl.parsing.match.context import MatchContext
 from etl.parsing.match.clustering.engagements import build_engagements_asset
@@ -71,8 +71,14 @@ def process_match_timeline(raw: RawMatchData, event_window_id: str) -> None:
     Runs with NO database transaction open — a 100+ MiB upload can take minutes
     and would otherwise trip Postgres's idle-in-transaction timeout. Idempotent:
     the uploader clears this match's stale chunks before writing.
+
+    The metadata is stamped with TIMELINE_VERSION: the website serves chunks,
+    zones and shots as immutable and versions their URLs with it, so a rebuilt
+    timeline gets fresh URLs instead of browsers' cached copies.
     """
-    load_match_timeline(parse_match_timeline(raw), event_window_id)
+    parsed = parse_match_timeline(raw)
+    parsed.metadata["timeline_version"] = TIMELINE_VERSION
+    load_match_timeline(parsed, event_window_id)
 
 
 def process_match_engagements(raw: RawMatchData, event_window_id: str) -> None:
