@@ -50,7 +50,7 @@ from etl.db.status import (
     mark_stat_processed,
     mark_stat_failed,
 )
-from etl.types import RawEventWindowData
+from etl.types import RawEventWindowData, RawLeaderboardData
 
 
 def get_existing_event_window_ids() -> list[str]:
@@ -236,7 +236,7 @@ def ingest_event_window_metadata(
 def ingest_event_window_leaderboard(
     event_window_id: str,
     refresh: bool = False,
-) -> None:
+) -> RawLeaderboardData:
     """Fetch, build, and load the tournament leaderboard for *event_window_id*.
 
     Mirrors :func:`ingest_event_window_metadata`: a self-contained window-level
@@ -245,7 +245,9 @@ def ingest_event_window_leaderboard(
     ``event_window_team_matches``) additionally need scoring rules and are
     skipped — without failing — for windows aged out of fnapi's listing.
     Independent of match processing — the per-game stats come pre-aggregated
-    from the leaderboard endpoint.
+    from the leaderboard endpoint. Returns the raw leaderboard it loaded, so
+    callers (e.g. the live loop) can inspect ``sessionHistory`` without a
+    second fetch.
     """
     print(f"Ingesting leaderboard for event window: {event_window_id}")
 
@@ -265,7 +267,7 @@ def ingest_event_window_leaderboard(
             f"✅ Player flags ingested for {event_window_id}: {len(player_rows)} "
             f"players (no scoring rules — team standings skipped)"
         )
-        return
+        return raw
 
     team_rows, match_rows = build_leaderboard_rows(
         raw.entries, raw.scoring_rules, event_window_id, raw.match_point_rule
@@ -279,6 +281,7 @@ def ingest_event_window_leaderboard(
         f"{len(team_rows)} teams, {len(match_rows)} team-matches, "
         f"{len(player_rows)} players"
     )
+    return raw
 
 
 def scored_session_ids(event_window_id: str, refresh: bool = False) -> set[str] | None:
