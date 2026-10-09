@@ -106,12 +106,16 @@ class S3DataStore:
             ContentType=content_type,
         )
 
-    def delete_prefix(self, prefix: str) -> int:
-        """Delete all objects under a prefix. Returns the number of objects deleted."""
+    def delete_prefix(self, prefix: str, *, keep=None) -> int:
+        """Delete all objects under a prefix, except keys for which ``keep(key)``
+        is true. Returns the number of objects deleted."""
         deleted = 0
         paginator = self.s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
-            objects = page.get("Contents", [])
+            objects = [
+                obj for obj in page.get("Contents", [])
+                if keep is None or not keep(obj["Key"])
+            ]
             if not objects:
                 continue
             self.s3.delete_objects(
@@ -175,9 +179,16 @@ class S3TournamentObjectStore:
     def __init__(self, bucket: str, s3_client = None):
         self.store = S3DataStore(bucket=bucket, s3_client=s3_client)
 
-    def delete_match_movement_chunks(self, match_id: str) -> int:
+    def delete_match_movement_chunks(self, match_id: str, keep_first: int = 0) -> int:
+        """Delete the match's movement chunks, except the first ``keep_first``
+        (chunks 0 .. keep_first-1). Returns the number deleted."""
         prefix = f"replays/matches/{match_id}/movement/"
-        return self.store.delete_prefix(prefix)
+
+        def keep(key: str) -> bool:
+            stem = key.rsplit("/", 1)[1].removesuffix(".npy")
+            return stem.isdigit() and int(stem) < keep_first
+
+        return self.store.delete_prefix(prefix, keep=keep)
 
     def put_match_movement_chunk(self, match_id: str, number: int, data) -> None:
         key = f"replays/matches/{match_id}/movement/{number:05d}.npy"

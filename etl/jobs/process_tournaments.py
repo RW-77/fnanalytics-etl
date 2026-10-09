@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 import etl.db.loader as db_loader
-import etl.storage.loader as s3_loader
 
 from etl.fetching.match_data_fetching import (
     ensure_match_raw,
@@ -129,12 +128,8 @@ def process_match(match_id: str, event_window_id: str, force: bool = False) -> b
             ok = False
             print(f"❌ Timeline upload failed for match {match_id}: {e}")
             traceback.print_exc()
-            try:
-                deleted = s3_loader.cleanup_match_timeline(match_id)
-                if deleted:
-                    print(f"Cleaned up {deleted} orphaned movement chunks for {match_id}")
-            except Exception as cleanup_err:
-                print(f"⚠️  Failed to clean up movement chunks for {match_id}: {cleanup_err}")
+            # Nothing to clean up: the previous timeline stays playable (see
+            # load_match_timeline) and the next run retries.
             _record_stat_failures(match_id, {TIMELINE_NAME})
 
     # Phase C — engagements asset, NO db transaction open (S3 upload).

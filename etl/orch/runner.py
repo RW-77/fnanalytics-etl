@@ -71,7 +71,8 @@ def process_match_timeline(raw: RawMatchData, event_window_id: str) -> None:
 
     Runs with NO database transaction open — a 100+ MiB upload can take minutes
     and would otherwise trip Postgres's idle-in-transaction timeout. Idempotent:
-    the uploader clears this match's stale chunks before writing.
+    chunks are overwritten in place and any past the new end are deleted
+    afterwards, so a failed run leaves the previous timeline playable.
 
     The metadata is stamped with TIMELINE_VERSION: the website serves chunks,
     zones and shots as immutable and versions their URLs with it, so a rebuilt
