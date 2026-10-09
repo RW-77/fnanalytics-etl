@@ -384,6 +384,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Re-materialize every stat for every match, even if already current.",
     )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Reconcile every event window already in the database instead of "
+            "the hardcoded list — e.g. after a version bump or a new stat, to "
+            "bring every match up to date (current matches are skipped)."
+        ),
+    )
     args = parser.parse_args()
 
     """
@@ -467,6 +476,8 @@ if __name__ == "__main__":
 
     event_window_ids: list[str] = [
     ]
+    if args.all:
+        event_window_ids = get_existing_event_window_ids()
     
     statuses: dict[str, dict] = {}
     for event_window_id in event_window_ids:
