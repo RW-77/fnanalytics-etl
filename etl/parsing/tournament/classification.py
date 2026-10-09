@@ -30,6 +30,7 @@ LEGACY_DAY_PATTERN = re.compile(r"GrandFinalDay(?P<day_index>\d+)(?:_|$)", re.IG
 # convention. ``season_code`` cannot be inferred from the ID alone for
 # these — set it manually downstream if needed.
 GLOBAL_CHAMPIONSHIP_CODENAMES = (
+    "MannekenPis",  # 2026 Global Championship
     "Dinosauron",   # 2025 Global Championship
     "BambiRaptor",  # 2024 Global Championship
 )

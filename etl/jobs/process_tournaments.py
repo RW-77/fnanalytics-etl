@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 import etl.db.loader as db_loader
-import etl.storage.loader as s3_loader
 
 from etl.fetching.match_data_fetching import (
     ensure_match_raw,
@@ -51,7 +50,7 @@ from etl.db.status import (
     mark_stat_processed,
     mark_stat_failed,
 )
-from etl.types import RawEventWindowData
+from etl.types import RawEventWindowData, RawLeaderboardData
 
 
 def get_existing_event_window_ids() -> list[str]:
@@ -129,12 +128,8 @@ def process_match(match_id: str, event_window_id: str, force: bool = False) -> b
             ok = False
             print(f"❌ Timeline upload failed for match {match_id}: {e}")
             traceback.print_exc()
-            try:
-                deleted = s3_loader.cleanup_match_timeline(match_id)
-                if deleted:
-                    print(f"Cleaned up {deleted} orphaned movement chunks for {match_id}")
-            except Exception as cleanup_err:
-                print(f"⚠️  Failed to clean up movement chunks for {match_id}: {cleanup_err}")
+            # Nothing to clean up: the previous timeline stays playable (see
+            # load_match_timeline) and the next run retries.
             _record_stat_failures(match_id, {TIMELINE_NAME})
 
     # Phase C — engagements asset, NO db transaction open (S3 upload).
@@ -241,7 +236,7 @@ def ingest_event_window_metadata(
 def ingest_event_window_leaderboard(
     event_window_id: str,
     refresh: bool = False,
-) -> None:
+) -> RawLeaderboardData:
     """Fetch, build, and load the tournament leaderboard for *event_window_id*.
 
     Mirrors :func:`ingest_event_window_metadata`: a self-contained window-level
@@ -250,7 +245,9 @@ def ingest_event_window_leaderboard(
     ``event_window_team_matches``) additionally need scoring rules and are
     skipped — without failing — for windows aged out of fnapi's listing.
     Independent of match processing — the per-game stats come pre-aggregated
-    from the leaderboard endpoint.
+    from the leaderboard endpoint. Returns the raw leaderboard it loaded, so
+    callers (e.g. the live loop) can inspect ``sessionHistory`` without a
+    second fetch.
     """
     print(f"Ingesting leaderboard for event window: {event_window_id}")
 
@@ -270,7 +267,7 @@ def ingest_event_window_leaderboard(
             f"✅ Player flags ingested for {event_window_id}: {len(player_rows)} "
             f"players (no scoring rules — team standings skipped)"
         )
-        return
+        return raw
 
     team_rows, match_rows = build_leaderboard_rows(
         raw.entries, raw.scoring_rules, event_window_id, raw.match_point_rule
@@ -283,6 +280,58 @@ def ingest_event_window_leaderboard(
         f"✅ Leaderboard ingested for {event_window_id}: "
         f"{len(team_rows)} teams, {len(match_rows)} team-matches, "
         f"{len(player_rows)} players"
+    )
+    return raw
+
+
+def scored_session_ids(event_window_id: str, refresh: bool = False) -> set[str] | None:
+    """Session ids the window's leaderboard scores, or ``None`` if unknown.
+
+    Osirion's match list holds every server-recorded match tagged with the
+    event — cancelled restarts, warmup lobbies, games Epic later voids — while
+    the leaderboard's ``sessionHistory`` lists only the games that count (and
+    Epic drops a voided game from it). ``sessionId`` == the match's ``serverId``.
+    """
+    try:
+        raw = ensure_event_window_leaderboard_raw(
+            event_window_id, get_region_code(event_window_id), refresh=refresh
+        )
+    except LookupError:
+        return None
+    sessions = {
+        played["sessionId"] for entry in raw.entries for played in entry["sessionHistory"]
+    }
+    return sessions or None
+
+
+def drop_unscored_matches(
+    raw: RawEventWindowData, scored: set[str] | None
+) -> RawEventWindowData:
+    """Keep only the listed matches the leaderboard scores.
+
+    Without leaderboard sessions, or when none of the listed matches are on it
+    (ids that don't join, e.g. an old window), every match is kept rather than
+    silently dropping a whole window.
+    """
+    if scored is None:
+        print(f"⚠️  No leaderboard sessions for {raw.event_window_id}; processing every listed match")
+        return raw
+    kept = [m for m in raw.matches if m["info"].get("serverId") in scored]
+    if raw.matches and not kept:
+        print(
+            f"⚠️  None of {raw.event_window_id}'s {len(raw.matches)} listed matches are on "
+            f"its leaderboard; processing every listed match"
+        )
+        return raw
+    for match in raw.matches:
+        if match not in kept:
+            print(
+                f"⏭️  Skipping unscored match {match['info']['matchId']} "
+                f"(session {match['info'].get('serverId')}): not on the leaderboard "
+                f"(cancelled, warmup or voided)"
+            )
+    return RawEventWindowData(
+        event_window_id=raw.event_window_id, info=raw.info, matches=kept
     )
 
 
@@ -309,7 +358,10 @@ def process_event_window(
     started_at = datetime.now(timezone.utc)
 
     # Fetch raw once; reuse for both metadata ingestion and match iteration.
+    # Unscored matches are dropped up front so they neither count toward the
+    # window's total_matches nor get ingested.
     raw = ensure_event_window_raw(event_window_id, refresh=refresh)
+    raw = drop_unscored_matches(raw, scored_session_ids(event_window_id, refresh=refresh))
 
     # Phase 1 — metadata. Same code path the backfill uses.
     ingest_event_window_metadata(event_window_id, raw=raw)

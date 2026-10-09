@@ -110,6 +110,19 @@ def _normalize_event_window_matches(value, *, event_window_id: str) -> list[dict
     )
 
 
+def _normalize_match_log(value, *, log_type: str):
+    """
+    Backward-compatible normalization for cached match logs.
+
+    New fetches store a bare list, but logs cached by older code may still
+    hold the full API envelope, e.g. weapons.json as {"weapons": [...]}
+    (seen on S33-S36 matches). Unwrap it so parsers always get the list.
+    """
+    if isinstance(value, dict) and set(value) == {log_type} and isinstance(value[log_type], list):
+        return value[log_type]
+    return value
+
+
 def _get_missing_log_types(match_id: str) -> list[str]:
     """
     Checks for existence of all raw match logs in S3 and returns the log keys
@@ -187,7 +200,9 @@ def get_raw_match_data(match_id: str) -> RawMatchData:
 
     bucket = S3TournamentLogStore(bucket=LOGS_BUCKET)
     raw_match_data = {
-        field_name: bucket.get_match_log(match_id, log_type)
+        field_name: _normalize_match_log(
+            bucket.get_match_log(match_id, log_type), log_type=log_type
+        )
         for log_type, field_name in RAW_MATCH_DATA_FIELDS.items()
     }
 

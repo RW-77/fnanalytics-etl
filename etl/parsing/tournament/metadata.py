@@ -175,6 +175,10 @@ TOURNAMENT_REGISTRY: dict[str, TournamentOverride] = {
         season_code="S41",
         force_day_index_null=True,
     ),
+    "MannekenPis": TournamentOverride(
+        title="FNCS Global Championship 2026",
+        season_code="S42",
+    ),
 }
 
 
