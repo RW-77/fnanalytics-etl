@@ -12,6 +12,7 @@ from etl.db.models import (
     FireWeaponEvent,
     Map,
     Match,
+    MatchEventCount,
     MatchPlayer,
     MatchPlayerCosmetic,
     DamageDealtEvent,
@@ -1060,6 +1061,32 @@ def load_match_cosmetics(cosmetics: list[dict], ctx: LoadContext) -> int:
 
     print(f"✅ Loaded {len(records)} player cosmetics")
     return len(records)
+
+
+def load_event_counts(counts: list[dict], ctx: LoadContext) -> int:
+    """
+    Insert how many events each of the match's raw logs holds.
+
+    Args:
+        counts: List of dicts from parse_event_counts() with keys:
+            - log_type (str): RawMatchData field name, e.g. 'movement_events'
+            - count (int): Number of events in that log
+        ctx: LoadContext carrying match_id and session
+
+    Returns:
+        int: Number of rows loaded
+    """
+    # Own our rows: clear this match's existing rows before (re)inserting.
+    ctx.session.execute(
+        delete(MatchEventCount).where(MatchEventCount.match_id == ctx.match_id)
+    )
+    ctx.session.execute(
+        insert(MatchEventCount), [{"match_id": ctx.match_id, **c} for c in counts]
+    )
+
+    total = sum(c["count"] for c in counts)
+    print(f"✅ Loaded event counts for {len(counts)} logs ({total:,} events)")
+    return len(counts)
 
 
 def load_weapons(parsed: list[dict], session: Session) -> set[str]:
