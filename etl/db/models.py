@@ -1071,6 +1071,33 @@ class MatchStatStatus(Base):
         )
 
 
+class MatchEventCount(Base):
+    """How many events one of a match's raw logs holds (the ``event_counts``
+    registry stat).
+
+    One row per (match, log), for the logs in
+    ``etl/parsing/match/relational/event_counts.py``. The website sums
+    ``count`` for its all-time event total; keeping it per log lets it leave
+    logs out without a re-count.
+    """
+    __tablename__ = "match_event_counts"
+
+    match_id: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("matches.match_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    # RawMatchData field name, e.g. 'movement_events'
+    log_type: Mapped[str] = mapped_column(String(50), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer)
+
+    def __repr__(self):
+        return (
+            f"<MatchEventCount(match_id={self.match_id}, "
+            f"log_type={self.log_type!r}, count={self.count})>"
+        )
+
+
 class Map(Base):
     """Map catalog — one row per (build_major, build_minor, mode_id) we have
     mirrored to S3.
