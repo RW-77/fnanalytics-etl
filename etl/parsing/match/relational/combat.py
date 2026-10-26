@@ -13,8 +13,9 @@ def calculate_distances(
     coords_pairs: list[tuple[coord3d, coord3d]]
 ) -> np.ndarray:
     """Calculate 3D distances from coordinate pairs."""
-    a_arr = np.array([c[0] for c in coords_pairs], dtype=np.float32)
-    r_arr = np.array([c[1] for c in coords_pairs], dtype=np.float32)
+    # reshape so an empty list (e.g. no knocks in a solo match) stays 2-D
+    a_arr = np.array([c[0] for c in coords_pairs], dtype=np.float32).reshape(-1, 3)
+    r_arr = np.array([c[1] for c in coords_pairs], dtype=np.float32).reshape(-1, 3)
     diff = a_arr - r_arr
     return np.sqrt(np.sum(diff**2, axis=1))
 
