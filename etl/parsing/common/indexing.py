@@ -2,6 +2,7 @@ import bisect
 from collections import defaultdict
 from typing import Any, NamedTuple
 from etl.types import RawMatchData
+from etl.parsing.common.movement import movement_data
 
 
 import numpy as np
@@ -31,7 +32,7 @@ class PlayerPositionIndex:
         self._ts: dict[str, list[int]] = defaultdict(list)
         self._loc: dict[str, list[tuple[float, float, float]]] = defaultdict(list)
         for me in sorted(raw.movement_events, key=lambda e: e["timestamp"]):
-            loc = me["movementData"]["location"]
+            loc = movement_data(me)["location"]
             self._ts[me["epicId"]].append(me["timestamp"])
             self._loc[me["epicId"]].append((loc["x"], loc["y"], loc["z"]))
 

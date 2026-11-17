@@ -3,6 +3,7 @@ import numpy as np
 from etl.types import RawMatchData
 from etl.parsing.common.indexing import indexed_events, PlayerPositionIndex
 from etl.parsing.common.eligibility import eligible_player_ids
+from etl.parsing.common.movement import movement_data
 from etl.parsing.common.zones import sorted_zone_events, zone_for_timestamp
 
 
@@ -240,7 +241,7 @@ def parse_hitscan_elims(raw: RawMatchData) -> list[dict]:
 
         actor_id = he["epicId"]
         actor_move_event = pos_cache[actor_id]["closest_events"][i]
-        actor_loc = actor_move_event["movementData"]["location"]
+        actor_loc = movement_data(actor_move_event)["location"]
 
         recipient_loc = he["location"]
 
@@ -330,7 +331,7 @@ def parse_damage_dealt(raw: RawMatchData):
 
         actor_id = he["epicId"]
         actor_move_event = pos_cache[actor_id]["closest_events"][i]
-        actor_loc = actor_move_event["movementData"]["location"]
+        actor_loc = movement_data(actor_move_event)["location"]
 
         recipient_id = he["hitEpicId"]
         recipient_loc = he["location"]
@@ -395,7 +396,7 @@ def _nearest_movement_location(
         before = player_events[idx - 1]
         after = player_events[idx]
         evt = after if (after["timestamp"] - timestamp) < (timestamp - before["timestamp"]) else before
-    loc = evt["movementData"]["location"]
+    loc = movement_data(evt)["location"]
     return loc["x"], loc["y"], loc["z"]
 
 
