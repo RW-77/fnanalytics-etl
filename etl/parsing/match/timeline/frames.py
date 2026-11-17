@@ -1,6 +1,7 @@
 import numpy as np
 
 from etl.types import RawMatchData
+from etl.parsing.common.movement import movement_data
 
 TIMELINE_HZ = 30
 
@@ -107,11 +108,12 @@ def _simulate_frames(
             case "movement":
                 if idx is None:
                     continue
-                loc = data["movementData"]["location"]
+                move = movement_data(data)
+                loc = move["location"]
                 state[idx, _X] = loc["x"]
                 state[idx, _Y] = loc["y"]
                 state[idx, _Z] = loc["z"]
-                state[idx, _YAW] = data["movementData"]["rotationYaw"]
+                state[idx, _YAW] = move["rotationYaw"]
                 snapshot = state[idx, :4].copy()
                 kf = movement_keyframes.setdefault(idx, [])
                 if kf and kf[-1][0] == len(frames):
